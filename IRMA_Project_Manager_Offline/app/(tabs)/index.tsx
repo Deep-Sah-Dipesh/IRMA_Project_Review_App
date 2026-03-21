@@ -1,154 +1,327 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback } from 'react-native';
 import * as SQLite from 'expo-sqlite';
-import * as DocumentPicker from 'expo-document-picker';
-import * as XLSX from 'xlsx';
-import * as FileSystem from 'expo-file-system/legacy';
+import { Ionicons } from '@expo/vector-icons';
 
-export default function HomeScreen() {
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [status, setStatus] = useState({ monitoringDate: null as string | null, irmaDate: null as string | null });
+interface Tender {
+  project_id: string;
+  tender_id: string;
+  project_title: string;
+  project_type: string;
+  state: string;
+  district: string;
+  ulb: string;
+  physical_progress: string;
+}
 
-  useEffect(() => { fetchImportStatus(); }, []);
+export default function Dashboard() {
+  const [loading, setLoading] = useState(true);
+  const [tenders, setTenders] = useState<Tender[]>([]);
+  
+  // Search & Filter State
+  const [search, setSearch] = useState('');
+  const [state, setState] = useState('');
+  const [district, setDistrict] = useState('');
+  const [ulb, setUlb] = useState('');
+  const [progressFilter, setProgressFilter] = useState('');
+  
+  // Sorting State
+  const [sortBy, setSortBy] = useState<'title' | 'id' | 'type' | 'progress' | ''>('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  const fetchImportStatus = async () => {
+  // UI State
+  const [activeModal, setActiveModal] = useState<{type: 'state' | 'district' | 'ulb' | 'sort' | 'progress', options: string[], title: string} | null>(null);
+  const filterScrollRef = useRef<ScrollView>(null);
+
+  useEffect(() => { loadTenders(); }, []);
+
+  const loadTenders = async () => {
     try {
+      setLoading(true);
       const db = await SQLite.openDatabaseAsync('civil_projects.db');
-      const mRes = await db.getFirstAsync<{value: string}>("SELECT value FROM metadata WHERE key = 'monitoring_date'");
-      const iRes = await db.getFirstAsync<{value: string}>("SELECT value FROM metadata WHERE key = 'irma_date'");
-      setStatus({ monitoringDate: mRes?.value || null, irmaDate: iRes?.value || null });
-    } catch (e) { console.error(e); }
-  };
-
-  // Critical fix for Android NullPointerException
-  const toSqlSafe = (val: any): string => {
-    if (val === undefined || val === null || val === "") return "";
-    return String(val).trim();
-  };
-
-  const processExcel = async (uri: string, type: 'monitoring' | 'irma') => {
-    try {
-      const b64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
-      
-      // Step 1: Fast Validation (Check structure without reading rows)
-      const workbook = XLSX.read(b64, { type: 'base64', bookSheets: true });
-      const sheetNames = workbook.SheetNames;
-
-      if (type === 'monitoring' && (!sheetNames.includes('Tender Details') || !sheetNames.includes('Project Details'))) {
-        throw new Error("Invalid File: Missing 'Tender Details' or 'Project Details' sheets.");
-      }
-      if (type === 'irma' && !sheetNames.includes('Major-Observation')) {
-        throw new Error("Invalid File: Missing 'Major-Observation' sheet.");
-      }
-
-      // Step 2: Full Parse
-      const fullWorkbook = XLSX.read(b64, { type: 'base64' });
-      const db = await SQLite.openDatabaseAsync('civil_projects.db');
-
-      if (type === 'monitoring') {
-        const data = XLSX.utils.sheet_to_json(fullWorkbook.Sheets['Tender Details']) as any[];
-        await db.withTransactionAsync(async () => {
-          const stmt = await db.prepareAsync(`
-            INSERT OR REPLACE INTO tenders VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          `);
-          try {
-            for (const r of data) {
-              if (!r['Project ID']) continue;
-              await stmt.executeAsync([
-                toSqlSafe(r['Project ID']), toSqlSafe(r['ULB']), toSqlSafe(r['State']),
-                toSqlSafe(r['District']), toSqlSafe(r['Project Type']), toSqlSafe(r['Project Title']),
-                toSqlSafe(r['Tender ID']), toSqlSafe(r['Tender Name']), toSqlSafe(r['NIT Issued Date']),
-                toSqlSafe(r['Contract Award Date']), toSqlSafe(r['Successful Bidder Name']),
-                toSqlSafe(r['CAPEX (in Cr.)']), toSqlSafe(r['O&M (in CR.)']),
-                toSqlSafe(r['Brief Scope of Work']), toSqlSafe(r['Physical Progress (in %)']),
-                toSqlSafe(r['Financial Progress (in %)'])
-              ]);
-            }
-          } finally { await stmt.finalizeAsync(); }
-          await db.runAsync("INSERT OR REPLACE INTO metadata VALUES ('monitoring_date', datetime('now'))");
-        });
-      } else {
-        const data = XLSX.utils.sheet_to_json(fullWorkbook.Sheets['Major-Observation']) as any[];
-        await db.withTransactionAsync(async () => {
-          await db.runAsync("DELETE FROM observations");
-          const stmt = await db.prepareAsync(`
-            INSERT INTO observations (project_code, state, ulb, project_type, project_title, visit_date, form_type, category, component, severity, observations) 
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
-          `);
-          try {
-            for (const r of data) {
-              if (!r['Project Code']) continue;
-              await stmt.executeAsync([
-                toSqlSafe(r['Project Code']), toSqlSafe(r['State']), toSqlSafe(r['ULB']),
-                toSqlSafe(r['Project Type']), toSqlSafe(r['Project Title']), toSqlSafe(r['Date of Visit']),
-                toSqlSafe(r['Form-Type']), toSqlSafe(r['Category']), toSqlSafe(r['Component']),
-                toSqlSafe(r['Severity']), toSqlSafe(r['IRMA Major Observations'])
-              ]);
-            }
-          } finally { await stmt.finalizeAsync(); }
-          await db.runAsync("INSERT OR REPLACE INTO metadata VALUES ('irma_date', datetime('now'))");
-        });
-      }
-      fetchImportStatus();
-      Alert.alert("Success", "Data indexed successfully.");
-    } catch (e: any) {
-      Alert.alert("Import Error", e.message);
-    } finally { setIsProcessing(false); }
-  };
-
-  const handleImport = async (type: 'monitoring' | 'irma') => {
-    const res = await DocumentPicker.getDocumentAsync({ type: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'] });
-    if (!res.canceled) {
-      setIsProcessing(true);
-      setTimeout(() => processExcel(res.assets[0].uri, type), 150);
+      const data = await db.getAllAsync<Tender>("SELECT * FROM tenders");
+      setTenders(data || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (isProcessing) return (
-    <View style={styles.center}><ActivityIndicator size="large" color="#2563EB" />
-    <Text style={styles.loadingText}>Optimizing Database...</Text></View>
-  );
+  // Option Derivations (Adding 'All' Options)
+  const uniqueStates = ['All States', ...new Set(tenders.map(t => t.state).filter(Boolean))].sort();
+  const uniqueDistricts = ['All Districts', ...new Set(tenders.filter(t => !state || t.state === state).map(t => t.district).filter(Boolean))].sort();
+  const uniqueUlbs = ['All ULBs', ...new Set(tenders.filter(t => (!state || t.state === state) && (!district || t.district === district)).map(t => t.ulb).filter(Boolean))].sort();
+  
+  const sortOptions = ['None', 'Project Title', 'Project ID', 'Project Type', 'Physical Progress'];
+  const progressOptions = ['All Ranges', '100%', '90-99%', '80-89%', '70-79%', '60-69%', '50-59%', '40-49%', '30-39%', '20-29%', '0-19%'];
 
-  const isReady = status.monitoringDate && status.irmaDate;
+  const filteredAndSortedTenders = useMemo(() => {
+    let filtered = tenders.filter(t => {
+      const q = search.toLowerCase();
+      const matchSearch = 
+        (t.project_title || '').toLowerCase().includes(q) || 
+        (t.project_id || '').toLowerCase().includes(q) ||
+        (t.tender_id || '').toLowerCase().includes(q) ||
+        (t.project_type || '').toLowerCase().includes(q) ||
+        (t.ulb || '').toLowerCase().includes(q);
+        
+      const matchState = state ? t.state === state : true;
+      const matchDistrict = district ? t.district === district : true;
+      const matchUlb = ulb ? t.ulb === ulb : true;
+
+      let matchProgress = true;
+      if (progressFilter) {
+        const p = parseFloat(t.physical_progress) || 0;
+        if (progressFilter === '100%') matchProgress = p === 100;
+        else if (progressFilter === '90-99%') matchProgress = p >= 90 && p < 100;
+        else if (progressFilter === '80-89%') matchProgress = p >= 80 && p < 90;
+        else if (progressFilter === '70-79%') matchProgress = p >= 70 && p < 80;
+        else if (progressFilter === '60-69%') matchProgress = p >= 60 && p < 70;
+        else if (progressFilter === '50-59%') matchProgress = p >= 50 && p < 60;
+        else if (progressFilter === '40-49%') matchProgress = p >= 40 && p < 50;
+        else if (progressFilter === '30-39%') matchProgress = p >= 30 && p < 40;
+        else if (progressFilter === '20-29%') matchProgress = p >= 20 && p < 30;
+        else if (progressFilter === '0-19%') matchProgress = p >= 0 && p < 20;
+      }
+
+      return matchSearch && matchState && matchDistrict && matchUlb && matchProgress;
+    });
+
+    if (sortBy) {
+      filtered.sort((a, b) => {
+        let res = 0;
+        if (sortBy === 'title') res = (a.project_title || '').localeCompare(b.project_title || '');
+        else if (sortBy === 'id') res = (a.project_id || '').localeCompare(b.project_id || '');
+        else if (sortBy === 'type') res = (a.project_type || '').localeCompare(b.project_type || '');
+        else if (sortBy === 'progress') {
+          const progA = parseFloat(a.physical_progress) || 0;
+          const progB = parseFloat(b.physical_progress) || 0;
+          res = progA - progB; 
+        }
+        return sortOrder === 'asc' ? res : -res;
+      });
+    }
+
+    return filtered;
+  }, [search, state, district, ulb, progressFilter, sortBy, sortOrder, tenders]);
+
+  const handleSelect = (selection: string) => {
+    if (activeModal?.type === 'state') { 
+      setState(selection === 'All States' ? '' : selection); 
+      setDistrict(''); setUlb(''); 
+    }
+    else if (activeModal?.type === 'district') { 
+      setDistrict(selection === 'All Districts' ? '' : selection); 
+      setUlb(''); 
+    }
+    else if (activeModal?.type === 'ulb') { 
+      setUlb(selection === 'All ULBs' ? '' : selection); 
+    }
+    else if (activeModal?.type === 'progress') { 
+      setProgressFilter(selection === 'All Ranges' ? '' : selection); 
+    }
+    else if (activeModal?.type === 'sort') {
+      if (selection === 'None') setSortBy('');
+      else if (selection === 'Project Title') setSortBy('title');
+      else if (selection === 'Project ID') setSortBy('id');
+      else if (selection === 'Project Type') setSortBy('type');
+      else if (selection === 'Physical Progress') setSortBy('progress');
+      setSortOrder('asc');
+    }
+    setActiveModal(null);
+  };
+
+  const handleResetAll = () => {
+    setState(''); setDistrict(''); setUlb(''); setSearch(''); setProgressFilter(''); setSortBy(''); setSortOrder('asc');
+    filterScrollRef.current?.scrollTo({ x: 0, animated: true });
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centerLoading}>
+        <ActivityIndicator size="large" color="#2563EB" />
+        <Text style={{ marginTop: 10 }}>Accessing Local Database...</Text>
+      </View>
+    );
+  }
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.header}>Data Initialization</Text>
-      <Text style={styles.sub}>Import master files to unlock the dashboard.</Text>
-
-      {[
-        { label: 'Project Monitoring Form', date: status.monitoringDate, type: 'monitoring' as const },
-        { label: 'IRMA Review Form', date: status.irmaDate, type: 'irma' as const }
-      ].map((item, idx) => (
-        <View key={idx} style={styles.card}>
-          <Text style={styles.cardTitle}>{item.label}</Text>
-          <Text style={[styles.status, { color: item.date ? '#166534' : '#991B1B' }]}>
-            {item.date ? `✓ Updated: ${item.date}` : '✗ Missing'}
-          </Text>
-          <TouchableOpacity style={styles.btn} onPress={() => handleImport(item.type)}>
-            <Text style={styles.btnText}>Import Excel</Text>
-          </TouchableOpacity>
+    <View style={styles.container}>
+      {/* HEADER SECTION */}
+      <View style={styles.header}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+          <Text style={styles.title}>Projects</Text>
+          
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity 
+              style={[styles.sortBtn, sortBy ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}]} 
+              onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}
+            >
+              <Ionicons name="swap-vertical" size={16} color="#475569" />
+              <Text style={styles.sortBtnText}>{sortBy ? sortOptions.find(o => o.toLowerCase().includes(sortBy)) || 'Sort By' : 'Sort By'}</Text>
+            </TouchableOpacity>
+            
+            {sortBy !== '' && (
+              <TouchableOpacity style={styles.sortDirectionBtn} onPress={() => setSortOrder(p => p === 'asc' ? 'desc' : 'asc')}>
+                <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2563EB" />
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
-      ))}
 
-      <TouchableOpacity style={[styles.mainBtn, !isReady && { opacity: 0.5 }]} disabled={!isReady}>
-        <Text style={styles.mainBtnText}>Continue to Dashboard</Text>
-      </TouchableOpacity>
-    </ScrollView>
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={20} color="#64748B" />
+          <TextInput 
+            placeholder="Search ID, Tender, Title, Type, ULB..." 
+            style={styles.input}
+            value={search}
+            onChangeText={setSearch}
+          />
+        </View>
+      </View>
+
+      {/* HORIZONTAL CASCADING FILTERS */}
+      <View style={styles.filterBar}>
+        <ScrollView ref={filterScrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 15 }}>
+          <FilterChip 
+            label={state || 'All States'} value={state} 
+            onPress={() => setActiveModal({ type: 'state', options: uniqueStates, title: 'Select State' })} 
+          />
+          <FilterChip 
+            label={district || (state ? 'All Districts' : 'District')} value={district} disabled={!state}
+            onPress={() => setActiveModal({ type: 'district', options: uniqueDistricts, title: 'Select District' })} 
+          />
+          <FilterChip 
+            label={ulb || (state ? 'All ULBs' : 'ULB')} value={ulb} disabled={!state}
+            onPress={() => setActiveModal({ type: 'ulb', options: uniqueUlbs, title: 'Select ULB' })} 
+          />
+          <FilterChip 
+            label={progressFilter || 'Progress Range'} value={progressFilter} 
+            onPress={() => setActiveModal({ type: 'progress', options: progressOptions, title: 'Filter by Progress' })} 
+          />
+          
+          {(state || district || ulb || progressFilter || search || sortBy) && (
+            <TouchableOpacity onPress={handleResetAll} style={styles.clearBtn}>
+              <Text style={{ color: '#EF4444', fontWeight: 'bold' }}>Reset All</Text>
+            </TouchableOpacity>
+          )}
+        </ScrollView>
+      </View>
+
+      {/* RESULTS LIST (Optimized for performance) */}
+      <FlatList 
+        data={filteredAndSortedTenders}
+        keyExtractor={(item, idx) => `${item.project_id}_${item.tender_id}_${idx}`}
+        initialNumToRender={10}
+        maxToRenderPerBatch={20}
+        windowSize={5}
+        removeClippedSubviews={true}
+        renderItem={({ item }) => (
+          <View style={styles.card}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+              <Text style={styles.cardId}>{item.project_id}</Text>
+              <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
+            </View>
+            <Text style={styles.cardType}>{item.project_type}</Text>
+            <Text style={styles.cardTitle}>{item.project_title}</Text>
+            
+            {/* Overflow Protected Footer */}
+            <View style={styles.cardFooter}>
+              <View style={styles.footerItem}>
+                <Ionicons name="location-outline" size={14} color="#64748B" style={{marginRight: 4, marginTop: 1}}/>
+                <Text style={styles.cardMeta}>{item.ulb}, {item.district}</Text>
+              </View>
+              <View style={[styles.footerItem, { justifyContent: 'flex-end' }]}>
+                <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
+              </View>
+            </View>
+          </View>
+        )}
+        ListEmptyComponent={<Text style={styles.emptyText}>No projects match your current filters.</Text>}
+        contentContainerStyle={{ padding: 15, paddingBottom: 100 }}
+      />
+
+      {/* REUSABLE SELECTION MODAL */}
+      <Modal visible={!!activeModal} transparent animationType="fade">
+        <TouchableWithoutFeedback onPress={() => setActiveModal(null)}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.modalContent}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>{activeModal?.title}</Text>
+                  <TouchableOpacity onPress={() => setActiveModal(null)}>
+                    <Ionicons name="close" size={24} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
+                
+                <FlatList
+                  data={activeModal?.options}
+                  keyExtractor={(item, idx) => `${item}_${idx}`}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity style={styles.modalItem} onPress={() => handleSelect(item)}>
+                      <Text style={[styles.modalItemText, (item === 'All States' || item === 'All Districts' || item === 'All ULBs' || item === 'None' || item === 'All Ranges') && { color: '#2563EB', fontWeight: 'bold' }]}>
+                        {item}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                />
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+    </View>
+  );
+}
+
+function FilterChip({ label, value, onPress, disabled }: any) {
+  return (
+    <TouchableOpacity 
+      style={[styles.filterChip, disabled && { opacity: 0.4 }, value ? { backgroundColor: '#2563EB', borderColor: '#2563EB' } : null]} 
+      disabled={disabled}
+      onPress={onPress}
+    >
+      <Text style={[styles.filterText, value ? { color: '#FFF' } : null]}>{label}</Text>
+      <Ionicons name="chevron-down" size={14} color={value ? "#FFF" : "#2563EB"} />
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC', padding: 20, paddingTop: 60 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { fontSize: 24, fontWeight: '800', color: '#1E293B' },
-  sub: { fontSize: 14, color: '#64748B', marginBottom: 20 },
-  loadingText: { marginTop: 10, fontWeight: '600' },
-  card: { backgroundColor: '#FFF', padding: 20, borderRadius: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0' },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#334155' },
-  status: { fontSize: 12, marginVertical: 5, fontWeight: '600' },
-  btn: { backgroundColor: '#EFF6FF', padding: 10, borderRadius: 8, alignItems: 'center', marginTop: 10 },
-  btnText: { color: '#2563EB', fontWeight: '700' },
-  mainBtn: { backgroundColor: '#2563EB', padding: 18, borderRadius: 10, alignItems: 'center', marginTop: 10 },
-  mainBtnText: { color: '#FFF', fontWeight: '800', fontSize: 16 }
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF' },
+  title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
+  sortBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
+  sortBtnText: { fontSize: 13, color: '#475569', marginLeft: 4, fontWeight: '600' },
+  sortDirectionBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 8, borderTopRightRadius: 8, borderBottomRightRadius: 8, marginLeft: 2 },
+  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', padding: 12, borderRadius: 10 },
+  input: { marginLeft: 10, flex: 1, fontSize: 16 },
+  filterBar: { backgroundColor: '#FFF', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#BFDBFE' },
+  filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
+  clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
+  
+  // Card UI
+  card: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
+  cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
+  progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },
+  cardType: { fontSize: 12, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 6 },
+  
+  // Flex-Wrap Footer for Overflow Protection
+  cardFooter: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderColor: '#F1F5F9', gap: 10 },
+  footerItem: { flexDirection: 'row', alignItems: 'flex-start', flexShrink: 1, minWidth: '45%' },
+  cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', lineHeight: 16 },
+  tenderId: { fontSize: 12, color: '#94A3B8', lineHeight: 16, fontWeight: '500' },
+  emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8' },
+  
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1E293B' },
+  modalItem: { padding: 18, borderBottomWidth: 1, borderColor: '#F1F5F9' },
+  modalItemText: { fontSize: 16, color: '#334155' }
 });
