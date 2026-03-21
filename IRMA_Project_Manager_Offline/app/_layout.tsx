@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { Stack } from 'expo-router';
 import * as SQLite from 'expo-sqlite';
 import * as SplashScreen from 'expo-splash-screen';
-import { syncStaticData } from '../utils/dbMigrator';
+import { syncStaticData, getExpectedCounts } from '../utils/dbMigrator';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -17,16 +17,15 @@ export default function RootLayout() {
         const db = await SQLite.openDatabaseAsync('civil_projects.db');
         await db.execAsync(`PRAGMA journal_mode = WAL;`);
 
-        // 1. Ensure schema exists (Removed DROP TABLE to keep your seeded data safe)
         await db.execAsync(`
           CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
           
           CREATE TABLE IF NOT EXISTS tenders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id TEXT, ulb TEXT, state TEXT, district TEXT, 
             project_type TEXT, project_title TEXT, tender_id TEXT, tender_name TEXT, 
             nit_date TEXT, award_date TEXT, bidder_name TEXT, capex TEXT, 
-            onm TEXT, scope TEXT, physical_progress TEXT, financial_progress TEXT,
-            PRIMARY KEY (project_id, tender_id)
+            onm TEXT, scope TEXT, physical_progress TEXT, financial_progress TEXT
           );
           
           CREATE TABLE IF NOT EXISTS observations (
@@ -36,21 +35,25 @@ export default function RootLayout() {
           );
         `);
 
-        // 2. Check if the database has already been seeded
-        let needsSync = false;
+        const expected = getExpectedCounts();
+        
+        let actualTenders = 0;
+        let actualObs = 0;
+        
         try {
-          const meta = await db.getFirstAsync<{value: string}>("SELECT value FROM metadata WHERE key = 'last_sync'");
-          if (!meta) needsSync = true;
+          const tCount = await db.getFirstAsync<{c: number}>("SELECT COUNT(*) as c FROM tenders");
+          const oCount = await db.getFirstAsync<{c: number}>("SELECT COUNT(*) as c FROM observations");
+          actualTenders = tCount?.c || 0;
+          actualObs = oCount?.c || 0;
         } catch (e) {
-          needsSync = true; // Table doesn't exist, we need to sync
+          // Ignore
         }
 
-        // 3. Seed ONLY if it hasn't been done yet
-        if (needsSync) {
-          console.log("Seeding database for the first time...");
+        if (actualTenders !== expected.tenders || actualObs !== expected.observations) {
+          console.log(`Dataset Mismatch! Expected ${expected.tenders} projects, found ${actualTenders}. Resyncing...`);
           await syncStaticData();
         } else {
-          console.log("Database already seeded. Skipping CSV parsing.");
+          console.log(`Database Verified: 100% Match. Loaded ${actualTenders} projects and ${actualObs} observations.`);
         }
 
         setIsReady(true);
@@ -75,9 +78,11 @@ export default function RootLayout() {
 
   if (!isReady) return null;
 
+  // FIX: Removed SQLiteProvider to prevent navigation router conflicts
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="project/[id]" options={{ presentation: 'card' }} />
     </Stack>
   );
 }

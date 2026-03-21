@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 
 interface Tender {
   project_id: string;
@@ -14,22 +15,40 @@ interface Tender {
   physical_progress: string;
 }
 
+const TenderCard = React.memo(({ item, onPress }: { item: Tender, onPress: () => void }) => (
+  <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={onPress}>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+      <Text style={styles.cardId}>{item.project_id}</Text>
+      <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
+    </View>
+    <Text style={styles.cardType}>{item.project_type}</Text>
+    <Text style={styles.cardTitle}>{item.project_title}</Text>
+    <View style={styles.cardFooter}>
+      <View style={styles.footerItem}>
+        <Ionicons name="location-outline" size={14} color="#64748B" style={{marginRight: 4, marginTop: 1}}/>
+        <Text style={styles.cardMeta}>{item.ulb}, {item.district}</Text>
+      </View>
+      <View style={[styles.footerItem, { justifyContent: 'flex-end' }]}>
+        <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
+      </View>
+    </View>
+  </TouchableOpacity>
+));
+
 export default function Dashboard() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [tenders, setTenders] = useState<Tender[]>([]);
   
-  // Search & Filter State
   const [search, setSearch] = useState('');
   const [state, setState] = useState('');
   const [district, setDistrict] = useState('');
   const [ulb, setUlb] = useState('');
   const [progressFilter, setProgressFilter] = useState('');
   
-  // Sorting State
   const [sortBy, setSortBy] = useState<'title' | 'id' | 'type' | 'progress' | ''>('');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  // UI State
   const [activeModal, setActiveModal] = useState<{type: 'state' | 'district' | 'ulb' | 'sort' | 'progress', options: string[], title: string} | null>(null);
   const filterScrollRef = useRef<ScrollView>(null);
 
@@ -38,6 +57,7 @@ export default function Dashboard() {
   const loadTenders = async () => {
     try {
       setLoading(true);
+      // FIX: Use localized connection
       const db = await SQLite.openDatabaseAsync('civil_projects.db');
       const data = await db.getAllAsync<Tender>("SELECT * FROM tenders");
       setTenders(data || []);
@@ -48,10 +68,9 @@ export default function Dashboard() {
     }
   };
 
-  // Option Derivations (Adding 'All' Options)
-  const uniqueStates = ['All States', ...new Set(tenders.map(t => t.state).filter(Boolean))].sort();
-  const uniqueDistricts = ['All Districts', ...new Set(tenders.filter(t => !state || t.state === state).map(t => t.district).filter(Boolean))].sort();
-  const uniqueUlbs = ['All ULBs', ...new Set(tenders.filter(t => (!state || t.state === state) && (!district || t.district === district)).map(t => t.ulb).filter(Boolean))].sort();
+  const uniqueStates = ['All States', ...[...new Set(tenders.map(t => t.state).filter(Boolean))].sort()];
+  const uniqueDistricts = ['All Districts', ...[...new Set(tenders.filter(t => !state || t.state === state).map(t => t.district).filter(Boolean))].sort()];
+  const uniqueUlbs = ['All ULBs', ...[...new Set(tenders.filter(t => (!state || t.state === state) && (!district || t.district === district)).map(t => t.ulb).filter(Boolean))].sort()];
   
   const sortOptions = ['None', 'Project Title', 'Project ID', 'Project Type', 'Physical Progress'];
   const progressOptions = ['All Ranges', '100%', '90-99%', '80-89%', '70-79%', '60-69%', '50-59%', '40-49%', '30-39%', '20-29%', '0-19%'];
@@ -107,20 +126,10 @@ export default function Dashboard() {
   }, [search, state, district, ulb, progressFilter, sortBy, sortOrder, tenders]);
 
   const handleSelect = (selection: string) => {
-    if (activeModal?.type === 'state') { 
-      setState(selection === 'All States' ? '' : selection); 
-      setDistrict(''); setUlb(''); 
-    }
-    else if (activeModal?.type === 'district') { 
-      setDistrict(selection === 'All Districts' ? '' : selection); 
-      setUlb(''); 
-    }
-    else if (activeModal?.type === 'ulb') { 
-      setUlb(selection === 'All ULBs' ? '' : selection); 
-    }
-    else if (activeModal?.type === 'progress') { 
-      setProgressFilter(selection === 'All Ranges' ? '' : selection); 
-    }
+    if (activeModal?.type === 'state') { setState(selection === 'All States' ? '' : selection); setDistrict(''); setUlb(''); }
+    else if (activeModal?.type === 'district') { setDistrict(selection === 'All Districts' ? '' : selection); setUlb(''); }
+    else if (activeModal?.type === 'ulb') { setUlb(selection === 'All ULBs' ? '' : selection); }
+    else if (activeModal?.type === 'progress') { setProgressFilter(selection === 'All Ranges' ? '' : selection); }
     else if (activeModal?.type === 'sort') {
       if (selection === 'None') setSortBy('');
       else if (selection === 'Project Title') setSortBy('title');
@@ -137,6 +146,13 @@ export default function Dashboard() {
     filterScrollRef.current?.scrollTo({ x: 0, animated: true });
   };
 
+  const renderItem = useCallback(({ item }: { item: Tender }) => (
+    <TenderCard 
+      item={item} 
+      onPress={() => router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id)}`)} 
+    />
+  ), [router]);
+
   if (loading) {
     return (
       <View style={styles.centerLoading}>
@@ -148,7 +164,6 @@ export default function Dashboard() {
 
   return (
     <View style={styles.container}>
-      {/* HEADER SECTION */}
       <View style={styles.header}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
           <Text style={styles.title}>Projects</Text>
@@ -181,25 +196,12 @@ export default function Dashboard() {
         </View>
       </View>
 
-      {/* HORIZONTAL CASCADING FILTERS */}
       <View style={styles.filterBar}>
         <ScrollView ref={filterScrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 15 }}>
-          <FilterChip 
-            label={state || 'All States'} value={state} 
-            onPress={() => setActiveModal({ type: 'state', options: uniqueStates, title: 'Select State' })} 
-          />
-          <FilterChip 
-            label={district || (state ? 'All Districts' : 'District')} value={district} disabled={!state}
-            onPress={() => setActiveModal({ type: 'district', options: uniqueDistricts, title: 'Select District' })} 
-          />
-          <FilterChip 
-            label={ulb || (state ? 'All ULBs' : 'ULB')} value={ulb} disabled={!state}
-            onPress={() => setActiveModal({ type: 'ulb', options: uniqueUlbs, title: 'Select ULB' })} 
-          />
-          <FilterChip 
-            label={progressFilter || 'Progress Range'} value={progressFilter} 
-            onPress={() => setActiveModal({ type: 'progress', options: progressOptions, title: 'Filter by Progress' })} 
-          />
+          <FilterChip label={state || 'All States'} value={state} onPress={() => setActiveModal({ type: 'state', options: uniqueStates, title: 'Select State' })} />
+          <FilterChip label={district || (state ? 'All Districts' : 'District')} value={district} disabled={!state} onPress={() => setActiveModal({ type: 'district', options: uniqueDistricts, title: 'Select District' })} />
+          <FilterChip label={ulb || (state ? 'All ULBs' : 'ULB')} value={ulb} disabled={!state} onPress={() => setActiveModal({ type: 'ulb', options: uniqueUlbs, title: 'Select ULB' })} />
+          <FilterChip label={progressFilter || 'Progress Range'} value={progressFilter} onPress={() => setActiveModal({ type: 'progress', options: progressOptions, title: 'Filter by Progress' })} />
           
           {(state || district || ulb || progressFilter || search || sortBy) && (
             <TouchableOpacity onPress={handleResetAll} style={styles.clearBtn}>
@@ -209,40 +211,19 @@ export default function Dashboard() {
         </ScrollView>
       </View>
 
-      {/* RESULTS LIST (Optimized for performance) */}
       <FlatList 
         data={filteredAndSortedTenders}
         keyExtractor={(item, idx) => `${item.project_id}_${item.tender_id}_${idx}`}
-        initialNumToRender={10}
-        maxToRenderPerBatch={20}
+        initialNumToRender={8}
+        maxToRenderPerBatch={10}
         windowSize={5}
         removeClippedSubviews={true}
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text style={styles.cardId}>{item.project_id}</Text>
-              <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
-            </View>
-            <Text style={styles.cardType}>{item.project_type}</Text>
-            <Text style={styles.cardTitle}>{item.project_title}</Text>
-            
-            {/* Overflow Protected Footer */}
-            <View style={styles.cardFooter}>
-              <View style={styles.footerItem}>
-                <Ionicons name="location-outline" size={14} color="#64748B" style={{marginRight: 4, marginTop: 1}}/>
-                <Text style={styles.cardMeta}>{item.ulb}, {item.district}</Text>
-              </View>
-              <View style={[styles.footerItem, { justifyContent: 'flex-end' }]}>
-                <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
-              </View>
-            </View>
-          </View>
-        )}
+        updateCellsBatchingPeriod={50}
+        renderItem={renderItem}
         ListEmptyComponent={<Text style={styles.emptyText}>No projects match your current filters.</Text>}
         contentContainerStyle={{ padding: 15, paddingBottom: 100 }}
       />
 
-      {/* REUSABLE SELECTION MODAL */}
       <Modal visible={!!activeModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setActiveModal(null)}>
           <View style={styles.modalOverlay}>
@@ -260,7 +241,7 @@ export default function Dashboard() {
                   keyExtractor={(item, idx) => `${item}_${idx}`}
                   renderItem={({ item }) => (
                     <TouchableOpacity style={styles.modalItem} onPress={() => handleSelect(item)}>
-                      <Text style={[styles.modalItemText, (item === 'All States' || item === 'All Districts' || item === 'All ULBs' || item === 'None' || item === 'All Ranges') && { color: '#2563EB', fontWeight: 'bold' }]}>
+                      <Text style={[styles.modalItemText, (item.includes('All ') || item === 'None') && { color: '#2563EB', fontWeight: 'bold' }]}>
                         {item}
                       </Text>
                     </TouchableOpacity>
@@ -302,22 +283,16 @@ const styles = StyleSheet.create({
   filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#BFDBFE' },
   filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
-  
-  // Card UI
   card: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
   progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },
   cardType: { fontSize: 12, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 6 },
-  
-  // Flex-Wrap Footer for Overflow Protection
   cardFooter: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderColor: '#F1F5F9', gap: 10 },
   footerItem: { flexDirection: 'row', alignItems: 'flex-start', flexShrink: 1, minWidth: '45%' },
   cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', lineHeight: 16 },
   tenderId: { fontSize: 12, color: '#94A3B8', lineHeight: 16, fontWeight: '500' },
   emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8' },
-  
-  // Modal
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },
