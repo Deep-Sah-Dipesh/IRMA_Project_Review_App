@@ -35,7 +35,7 @@ const TenderCard = React.memo(({ item, onPress }: { item: Tender, onPress: () =>
   </TouchableOpacity>
 ));
 
-export default function Dashboard() {
+export default function ProjectsTab() {
   const router = useRouter();
   const db = SQLite.useSQLiteContext();
   
@@ -174,7 +174,7 @@ export default function Dashboard() {
       <View style={styles.header}>
         {/* Main Header Row */}
         <View style={styles.headerRow}>
-          <Text style={styles.title}>Projects</Text>
+          <Text style={styles.title}>All Projects</Text>
           
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>

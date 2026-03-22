@@ -11,20 +11,28 @@ import VisitManager from '../../components/VisitManager';
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
   const parts = dateStr.split('-');
-  if (parts.length === 3) return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0])).getTime();
-  return 0;
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+       return new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])).getTime();
+    }
+    return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0])).getTime();
+  }
+  return new Date(dateStr).getTime() || 0;
 };
 
+// Safe decoding fixes double-encoded URL params
 const safeDecode = (val: any): string => {
   if (!val || val === 'undefined' || val === 'null') return '';
-  try { return decodeURIComponent(String(val)); } catch (e) { return String(val); }
+  let str = String(val);
+  try { str = decodeURIComponent(str); } catch (e) {}
+  return str;
 };
-
-const escapeSql = (str: string) => str.replace(/'/g, "''"); 
 
 export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
+  
+  const db = SQLite.useSQLiteContext();
   
   const projectId = safeDecode(Array.isArray(params.id) ? params.id[0] : params.id);
   const tenderId = safeDecode(Array.isArray(params.tender_id) ? params.tender_id[0] : params.tender_id);
@@ -38,38 +46,28 @@ export default function ProjectDetails() {
   const [showAllObs, setShowAllObs] = useState(false);
   const [isScopeExpanded, setIsScopeExpanded] = useState(false);
 
-  // ZIP Progress & Concurrency State
+  // Tracks if the user modified the project folder to route them to the dashboard instead of projects list
+  const [hasEdited, setHasEdited] = useState(false);
+
   const [zipProgress, setZipProgress] = useState<number | null>(null);
   const [zipStatusText, setZipStatusText] = useState<string>('');
   const [isZippingBackground, setIsZippingBackground] = useState(false);
   const isExportingRef = useRef(false);
   const cancelZipRef = useRef(false);
 
-  useFocusEffect(
-    useCallback(() => {
-      let isMounted = true;
-      if (!projectId || !tenderId) {
-        setTimeout(() => { if (isMounted) setLoading(false); }, 500);
-        return;
-      }
-      loadData(isMounted);
-      return () => { isMounted = false; };
-    }, [projectId, tenderId])
-  );
-
-  const loadData = async (isMounted: boolean) => {
+  const loadData = useCallback(() => {
+    if (!projectId || !tenderId) return;
+    
     setLoading(true);
     setDbError(null);
 
     try {
-      const db = SQLite.openDatabaseSync('civil_projects.db');
-      const pIdEscaped = escapeSql(projectId);
-      const tIdEscaped = escapeSql(tenderId);
-
-      const query = `SELECT * FROM tenders WHERE project_id = '${pIdEscaped}' AND tender_id = '${tIdEscaped}'`;
-      const projData = db.getFirstSync(query);
+      // PREVENTS NPE: Strict parameterized queries (no string interpolation vulnerabilities)
+      const projData = db.getFirstSync(
+        `SELECT * FROM tenders WHERE project_id = ? AND tender_id = ?`, 
+        [projectId, tenderId]
+      );
       
-      if (!isMounted) return;
       if (!projData) { 
         setProject(null); 
         setLoading(false); 
@@ -77,32 +75,67 @@ export default function ProjectDetails() {
       }
       setProject(projData);
 
-      const obsData = db.getAllSync(`SELECT * FROM observations WHERE project_code = '${pIdEscaped}'`) as any[];
-      if (obsData && obsData.length > 0 && isMounted) {
+      const obsData = db.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
+      if (obsData && obsData.length > 0) {
         const sortedObs = [...obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
         const newestTimestamp = parseDateString(sortedObs[0].visit_date);
         setLatestObs(sortedObs.filter((o: any) => parseDateString(o.visit_date) === newestTimestamp));
         setPrevObs(sortedObs.filter((o: any) => parseDateString(o.visit_date) !== newestTimestamp));
       }
+      setLoading(false);
     } catch (error: any) {
-      if (isMounted) setDbError(`Database Interruption: ${error.message}`);
-    } finally {
-      if (isMounted) setLoading(false);
+      setDbError(`Database Interruption: ${error.message}`);
+      setLoading(false);
+    }
+  }, [projectId, tenderId, db]);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!projectId || !tenderId) return;
+
+    const timeout = setTimeout(() => {
+      if (isMounted) loadData();
+    }, 50);
+
+    return () => { 
+      isMounted = false; 
+      clearTimeout(timeout);
+    };
+  }, [loadData, projectId, tenderId]);
+
+  const handleBackNavigation = () => {
+    if (hasEdited) {
+      router.replace('/(tabs)/dashboard');
+    } else {
+      router.back();
     }
   };
 
-  const countFilesRecursive = async (folderPath: string): Promise<number> => {
-    let count = 0;
-    const files = await FileSystem.readDirectoryAsync(folderPath);
-    for (const file of files) {
-      const info = await FileSystem.getInfoAsync(`${folderPath}${file}`);
-      if (info.isDirectory) count += await countFilesRecursive(`${folderPath}${file}/`);
-      else count++;
-    }
-    return count;
+  const getDirectoryMetadata = async (folderPath: string) => {
+    let totalFiles = 0;
+    let totalSize = 0;
+    let maxModTime = 0;
+
+    const traverse = async (currentPath: string) => {
+      const files = await FileSystem.readDirectoryAsync(currentPath);
+      for (const file of files) {
+        const fullPath = `${currentPath}${file}`;
+        const info = await FileSystem.getInfoAsync(fullPath);
+        if (info.isDirectory) {
+          await traverse(`${fullPath}/`);
+        } else {
+          totalFiles++;
+          totalSize += info.size || 0;
+          if (info.modificationTime && info.modificationTime > maxModTime) {
+            maxModTime = info.modificationTime;
+          }
+        }
+      }
+    };
+    await traverse(folderPath);
+    return { totalFiles, totalSize, maxModTime };
   };
 
-  // SMART ZIP CACHING & OOM PREVENTION
   const handleShareProjectZip = async () => {
     if (isExportingRef.current) {
       setIsZippingBackground(false);
@@ -112,25 +145,30 @@ export default function ProjectDetails() {
     try {
       const sanitizedFolder = `${projectId}_${tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
       const sourcePath = `${FileSystem.documentDirectory}projects/${sanitizedFolder}/`;
-      const targetPath = `${FileSystem.cacheDirectory}${sanitizedFolder}.zip`;
+      let targetPath = `${FileSystem.cacheDirectory}${sanitizedFolder}.zip`;
+      const metaCachePath = `${FileSystem.cacheDirectory}${sanitizedFolder}_meta.json`;
       
       const dirInfo = await FileSystem.getInfoAsync(sourcePath);
       if (!dirInfo.exists) return Alert.alert("No Data", "No files to share for this project.");
 
-      const totalFiles = await countFilesRecursive(sourcePath);
-      if (totalFiles === 0) return Alert.alert("Empty Directory", "No files exist to be exported.");
+      const currentMeta = await getDirectoryMetadata(sourcePath);
+      if (currentMeta.totalFiles === 0) return Alert.alert("Empty Directory", "No files exist to be exported.");
 
-      // Check Cache: Avoid duplicate processing if file counts match
-      const metaCachePath = `${FileSystem.cacheDirectory}${sanitizedFolder}_meta.txt`;
+      // ADVANCED CACHE CHECK
       const zipInfo = await FileSystem.getInfoAsync(targetPath);
-      const metaInfo = await FileSystem.getInfoAsync(metaCachePath);
+      const cacheInfo = await FileSystem.getInfoAsync(metaCachePath);
       
-      if (zipInfo.exists && metaInfo.exists) {
-         const lastFileCount = await FileSystem.readAsStringAsync(metaCachePath);
-         if (parseInt(lastFileCount) === totalFiles) {
-            // Unchanged: Serve immediately
-            return await Sharing.shareAsync(targetPath, { dialogTitle: `Share Project: ${projectId}` });
-         }
+      if (zipInfo.exists && zipInfo.size && zipInfo.size > 0 && cacheInfo.exists) {
+         try {
+           const cachedMetaStr = await FileSystem.readAsStringAsync(metaCachePath);
+           const cachedMeta = JSON.parse(cachedMetaStr);
+           
+           if (cachedMeta.totalFiles === currentMeta.totalFiles && 
+               cachedMeta.maxModTime === currentMeta.maxModTime && 
+               cachedMeta.totalSize === currentMeta.totalSize) {
+                 return await Sharing.shareAsync(targetPath, { dialogTitle: `Share Project: ${projectId}` });
+           }
+         } catch (cacheErr) {}
       }
 
       isExportingRef.current = true;
@@ -158,13 +196,12 @@ export default function ProjectDetails() {
             const newZipFolder = currentZipFolder.folder(file);
             if (newZipFolder) await addFolderToZip(`${fullPath}/`, newZipFolder);
           } else {
-            // Aggressive GC yield to prevent OutOfMemoryError on large datasets
-            await new Promise(resolve => setTimeout(resolve, 25)); 
+            await new Promise(resolve => setTimeout(resolve, 20)); 
             const base64 = await FileSystem.readAsStringAsync(fullPath, { encoding: FileSystem.EncodingType.Base64 });
             currentZipFolder.file(file, base64, { base64: true });
             
             processedFiles++;
-            setZipProgress(Math.floor((processedFiles / totalFiles) * 50)); 
+            setZipProgress(Math.floor((processedFiles / currentMeta.totalFiles) * 50)); 
           }
         }
       };
@@ -174,7 +211,6 @@ export default function ProjectDetails() {
       
       setZipStatusText("Packaging archive...");
       
-      // STORE mode uses significantly less RAM than DEFLATE
       const zipBase64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' }, (metadata) => {
         if (cancelZipRef.current) return;
         setZipProgress(50 + Math.floor(metadata.percent / 2));
@@ -183,8 +219,23 @@ export default function ProjectDetails() {
       if (cancelZipRef.current) throw new Error("Cancelled");
 
       setZipStatusText("Saving to disk...");
+      
+      if (zipInfo.exists) {
+        try {
+          await FileSystem.deleteAsync(targetPath, { idempotent: true });
+        } catch (delErr) {
+          targetPath = `${FileSystem.cacheDirectory}${sanitizedFolder}_${Date.now()}.zip`;
+        }
+      }
+      
       await FileSystem.writeAsStringAsync(targetPath, zipBase64, { encoding: FileSystem.EncodingType.Base64 });
-      await FileSystem.writeAsStringAsync(metaCachePath, totalFiles.toString()); // Cache the file count
+      
+      const finalZipCheck = await FileSystem.getInfoAsync(targetPath);
+      if (!finalZipCheck.exists || finalZipCheck.size === 0) {
+         throw new Error("OOM_CORRUPTION");
+      }
+
+      await FileSystem.writeAsStringAsync(metaCachePath, JSON.stringify(currentMeta)); 
       
       setZipProgress(null);
       isExportingRef.current = false;
@@ -215,11 +266,11 @@ export default function ProjectDetails() {
       <Text style={{ marginTop: 5, color: '#64748B', textAlign: 'center', marginBottom: 20 }}>
         {!project ? `Failed to load details for ID: ${projectId || 'Missing'}\nEnsure the database is fully seeded.` : dbError}
       </Text>
-      <TouchableOpacity onPress={() => loadData(true)} style={[styles.goBackBtn, { backgroundColor: '#10B981', marginBottom: 10 }]}>
+      <TouchableOpacity onPress={() => loadData()} style={[styles.goBackBtn, { backgroundColor: '#10B981', marginBottom: 10 }]}>
         <Ionicons name="refresh" size={16} color="#FFF" style={{marginRight: 6}} />
         <Text style={{color: '#FFF', fontWeight: 'bold'}}>Retry Data Fetch</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={() => router.back()} style={[styles.goBackBtn, { backgroundColor: '#64748B' }]}>
+      <TouchableOpacity onPress={handleBackNavigation} style={[styles.goBackBtn, { backgroundColor: '#64748B' }]}>
         <Ionicons name="arrow-back" size={16} color="#FFF" style={{marginRight: 6}} />
         <Text style={{color: '#FFF', fontWeight: 'bold'}}>Return to Dashboard</Text>
       </TouchableOpacity>
@@ -231,7 +282,7 @@ export default function ProjectDetails() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#1E293B" /></TouchableOpacity>
+        <TouchableOpacity onPress={handleBackNavigation} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#1E293B" /></TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
           <Text style={styles.headerTitle} numberOfLines={1}>{project.project_id}</Text>
           <Text style={styles.headerSub}>{project.ulb}, {project.state}</Text>
@@ -271,7 +322,7 @@ export default function ProjectDetails() {
           </View>
         </View>
 
-        <VisitManager projectId={projectId} tenderId={tenderId} />
+        <VisitManager projectId={projectId} tenderId={tenderId} onEdit={() => setHasEdited(true)} />
 
         <Text style={[styles.sectionTitle, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
         {latestObs.length === 0 && prevObs.length === 0 ? (

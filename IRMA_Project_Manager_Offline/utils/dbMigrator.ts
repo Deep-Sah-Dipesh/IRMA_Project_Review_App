@@ -7,12 +7,16 @@ const toSqlSafe = (val: any) => {
   return String(val).trim();
 };
 
+const sanitizeId = (val: any) => {
+  if (!val) return "";
+  return String(val).trim().replace(/\//g, '-');
+};
+
 const extractCleanCsv = (rawCsv: string) => {
   const startIndex = rawCsv.indexOf("Sno.");
   return startIndex !== -1 ? rawCsv.substring(startIndex).trim() : rawCsv.trim();
 };
 
-// Dynamically counts expected rows directly from the CSV strings
 export const getExpectedCounts = () => {
   const cleanMon = extractCleanCsv(MONITORING_CSV);
   const monParsed = Papa.parse(cleanMon, { header: true, skipEmptyLines: true });
@@ -25,20 +29,15 @@ export const getExpectedCounts = () => {
   return { tenders: tendersCount, observations: obsCount };
 };
 
-export const syncStaticData = async () => {
-  const db = await SQLite.openDatabaseAsync('civil_projects.db');
-
+export const syncStaticData = async (db: SQLite.SQLiteDatabase) => {
   try {
+    // ATOMIC TRANSACTION: If an error is thrown anywhere inside this block, 
+    // SQLite automatically discards all partial data and rolls back the tables.
     await db.withTransactionAsync(async () => {
-      // 1. FORCIBLY DROP TABLES
-      // This is crucial. It destroys the old schema that had the UNIQUE constraint bug.
+      
+      // 1. Prepare Schema
       await db.runAsync("DROP TABLE IF EXISTS tenders");
       await db.runAsync("DROP TABLE IF EXISTS observations");
-      await db.runAsync("DROP TABLE IF EXISTS metadata");
-
-      // 2. RECREATE WITH FLEXIBLE SCHEMA
-      // Using 'id INTEGER PRIMARY KEY AUTOINCREMENT' allows duplicate project_id/tender_id pairs to safely coexist.
-      await db.runAsync(`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)`);
       
       await db.runAsync(`
         CREATE TABLE tenders (
@@ -58,7 +57,7 @@ export const syncStaticData = async () => {
         )
       `);
 
-      // 3. SEED TENDERS
+      // 2. Parse & Insert Tenders
       const cleanMon = extractCleanCsv(MONITORING_CSV);
       const monParsed = Papa.parse(cleanMon, { header: true, skipEmptyLines: true, transformHeader: h => h.trim() });
       
@@ -70,20 +69,25 @@ export const syncStaticData = async () => {
       `);
 
       let tenderCount = 0;
-      for (const r of monParsed.data as any[]) {
-        if (!r['Project ID']) continue;
-        await tStmt.executeAsync([
-          toSqlSafe(r['Project ID']), toSqlSafe(r['ULB']), toSqlSafe(r['State']), toSqlSafe(r['District']), 
-          toSqlSafe(r['Project Type']), toSqlSafe(r['Project Title']), toSqlSafe(r['Tender ID']), 
-          toSqlSafe(r['Tender Name']), toSqlSafe(r['NIT Issued Date']), toSqlSafe(r['Contract Award Date']), 
-          toSqlSafe(r['Successful Bidder Name']), toSqlSafe(r['CAPEX (in Cr.)']), toSqlSafe(r['O&M (in CR.)']),
-          toSqlSafe(r['Brief Scope of Work']), toSqlSafe(r['Physical Progress (in %)']), toSqlSafe(r['Financial Progress (in %)'])
-        ]);
-        tenderCount++;
+      
+      // GUARANTEED CLEANUP: Ensure statement finalizes even if parsing crashes
+      try {
+        for (const r of monParsed.data as any[]) {
+          if (!r['Project ID']) continue;
+          await tStmt.executeAsync([
+            sanitizeId(r['Project ID']), toSqlSafe(r['ULB']), toSqlSafe(r['State']), toSqlSafe(r['District']), 
+            toSqlSafe(r['Project Type']), toSqlSafe(r['Project Title']), sanitizeId(r['Tender ID']), 
+            toSqlSafe(r['Tender Name']), toSqlSafe(r['NIT Issued Date']), toSqlSafe(r['Contract Award Date']), 
+            toSqlSafe(r['Successful Bidder Name']), toSqlSafe(r['CAPEX (in Cr.)']), toSqlSafe(r['O&M (in CR.)']),
+            toSqlSafe(r['Brief Scope of Work']), toSqlSafe(r['Physical Progress (in %)']), toSqlSafe(r['Financial Progress (in %)'])
+          ]);
+          tenderCount++;
+        }
+      } finally {
+        await tStmt.finalizeAsync();
       }
-      await tStmt.finalizeAsync();
 
-      // 4. SEED OBSERVATIONS
+      // 3. Parse & Insert Observations
       const cleanIrma = extractCleanCsv(IRMA_CSV);
       const irmaParsed = Papa.parse(cleanIrma, { header: true, skipEmptyLines: true, transformHeader: h => h.trim() });
 
@@ -95,18 +99,24 @@ export const syncStaticData = async () => {
       `);
 
       let obsCount = 0;
-      for (const r of irmaParsed.data as any[]) {
-        if (!r['Project Code']) continue;
-        await oStmt.executeAsync([
-          toSqlSafe(r['Project Code']), toSqlSafe(r['State']), toSqlSafe(r['ULB']), toSqlSafe(r['Project Type']), 
-          toSqlSafe(r['Project Title']), toSqlSafe(r['Date of Visit']), toSqlSafe(r['Form-Type']), 
-          toSqlSafe(r['Category']), toSqlSafe(r['Component']), toSqlSafe(r['Severity']), toSqlSafe(r['IRMA Major Observations'])
-        ]);
-        obsCount++;
+      
+      try {
+        for (const r of irmaParsed.data as any[]) {
+          if (!r['Project Code']) continue;
+          await oStmt.executeAsync([
+            sanitizeId(r['Project Code']), toSqlSafe(r['State']), toSqlSafe(r['ULB']), toSqlSafe(r['Project Type']), 
+            toSqlSafe(r['Project Title']), toSqlSafe(r['Date of Visit']), toSqlSafe(r['Form-Type']), 
+            toSqlSafe(r['Category']), toSqlSafe(r['Component']), toSqlSafe(r['Severity']), toSqlSafe(r['IRMA Major Observations'])
+          ]);
+          obsCount++;
+        }
+      } finally {
+        await oStmt.finalizeAsync();
       }
-      await oStmt.finalizeAsync();
 
-      await db.runAsync("INSERT INTO metadata (key, value) VALUES ('last_sync', datetime('now'))");
+      // 4. Finalize Sync Flag
+      // Because this is inside the transaction, it ONLY writes if ALL inserts succeeded.
+      await db.runAsync("INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_sync_v2', datetime('now'))");
       console.log(`Migration Complete: ${tenderCount} Tenders, ${obsCount} Observations.`);
     });
   } catch (error) {
