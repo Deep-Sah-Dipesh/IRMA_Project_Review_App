@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback } from 'react-native';
+import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -37,10 +37,14 @@ const TenderCard = React.memo(({ item, onPress }: { item: Tender, onPress: () =>
 
 export default function Dashboard() {
   const router = useRouter();
+  const db = SQLite.useSQLiteContext();
+  
   const [loading, setLoading] = useState(true);
   const [tenders, setTenders] = useState<Tender[]>([]);
   
+  const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
+  
   const [state, setState] = useState('');
   const [district, setDistrict] = useState('');
   const [ulb, setUlb] = useState('');
@@ -50,15 +54,16 @@ export default function Dashboard() {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const [activeModal, setActiveModal] = useState<{type: 'state' | 'district' | 'ulb' | 'sort' | 'progress', options: string[], title: string} | null>(null);
+  
   const filterScrollRef = useRef<ScrollView>(null);
+  const flatListRef = useRef<FlatList>(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   useEffect(() => { loadTenders(); }, []);
 
   const loadTenders = async () => {
     try {
       setLoading(true);
-      // FIX: Use localized connection
-      const db = await SQLite.openDatabaseAsync('civil_projects.db');
       const data = await db.getAllAsync<Tender>("SELECT * FROM tenders");
       setTenders(data || []);
     } catch (e) {
@@ -143,7 +148,9 @@ export default function Dashboard() {
 
   const handleResetAll = () => {
     setState(''); setDistrict(''); setUlb(''); setSearch(''); setProgressFilter(''); setSortBy(''); setSortOrder('asc');
+    setIsSearchActive(false);
     filterScrollRef.current?.scrollTo({ x: 0, animated: true });
+    Keyboard.dismiss();
   };
 
   const renderItem = useCallback(({ item }: { item: Tender }) => (
@@ -165,10 +172,16 @@ export default function Dashboard() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+        {/* Main Header Row */}
+        <View style={styles.headerRow}>
           <Text style={styles.title}>Projects</Text>
           
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>
+              <Ionicons name="search" size={16} color="#1E293B" />
+              <Text style={{marginLeft: 4, fontSize: 13, fontWeight: '600', color: '#1E293B'}}>Search</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity 
               style={[styles.sortBtn, sortBy ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}]} 
               onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}
@@ -185,15 +198,27 @@ export default function Dashboard() {
           </View>
         </View>
 
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={20} color="#64748B" />
-          <TextInput 
-            placeholder="Search ID, Tender, Title, Type, ULB..." 
-            style={styles.input}
-            value={search}
-            onChangeText={setSearch}
-          />
-        </View>
+        {/* Collapsible Search Bar (Appears below the header row) */}
+        {isSearchActive && (
+          <View style={styles.activeSearchBar}>
+            <Ionicons name="search" size={20} color="#64748B" />
+            <TextInput 
+              placeholder="Search ID, Title, Type, ULB..." 
+              style={styles.input}
+              value={search}
+              onChangeText={setSearch}
+              autoFocus
+            />
+            {search.length > 0 && (
+              <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 5 }}>
+                <Ionicons name="close-circle" size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={() => { setIsSearchActive(false); setSearch(''); Keyboard.dismiss(); }} style={{ paddingLeft: 10 }}>
+              <Text style={{ color: '#EF4444', fontWeight: 'bold' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       <View style={styles.filterBar}>
@@ -212,6 +237,7 @@ export default function Dashboard() {
       </View>
 
       <FlatList 
+        ref={flatListRef}
         data={filteredAndSortedTenders}
         keyExtractor={(item, idx) => `${item.project_id}_${item.tender_id}_${idx}`}
         initialNumToRender={8}
@@ -222,7 +248,15 @@ export default function Dashboard() {
         renderItem={renderItem}
         ListEmptyComponent={<Text style={styles.emptyText}>No projects match your current filters.</Text>}
         contentContainerStyle={{ padding: 15, paddingBottom: 100 }}
+        onScroll={(e) => setShowScrollTop(e.nativeEvent.contentOffset.y > 300)}
+        scrollEventThrottle={16}
       />
+
+      {showScrollTop && (
+        <TouchableOpacity style={styles.fab} onPress={() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true })}>
+          <Ionicons name="arrow-up" size={24} color="#FFF" />
+        </TouchableOpacity>
+      )}
 
       <Modal visible={!!activeModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setActiveModal(null)}>
@@ -273,11 +307,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
   centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
+  searchIconBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 8, marginRight: 8, backgroundColor: '#F1F5F9', borderRadius: 8 },
+  activeSearchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, marginTop: 12 },
   sortBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
   sortBtnText: { fontSize: 13, color: '#475569', marginLeft: 4, fontWeight: '600' },
   sortDirectionBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 8, borderTopRightRadius: 8, borderBottomRightRadius: 8, marginLeft: 2 },
-  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', padding: 12, borderRadius: 10 },
   input: { marginLeft: 10, flex: 1, fontSize: 16 },
   filterBar: { backgroundColor: '#FFF', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#E2E8F0' },
   filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#BFDBFE' },
@@ -293,6 +329,7 @@ const styles = StyleSheet.create({
   cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', lineHeight: 16 },
   tenderId: { fontSize: 12, color: '#94A3B8', lineHeight: 16, fontWeight: '500' },
   emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8' },
+  fab: { position: 'absolute', bottom: 30, right: 20, backgroundColor: '#2563EB', width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },

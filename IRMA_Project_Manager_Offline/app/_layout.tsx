@@ -78,11 +78,13 @@ export default function RootLayout() {
 
   if (!isReady) return null;
 
-  // FIX: Removed SQLiteProvider to prevent navigation router conflicts
+  // CRITICAL FIX: Wrapping the app in SQLiteProvider prevents connection drops during navigation
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="project/[id]" options={{ presentation: 'card' }} />
-    </Stack>
+    <SQLite.SQLiteProvider databaseName="civil_projects.db">
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="project/[id]" options={{ presentation: 'card' }} />
+      </Stack>
+    </SQLite.SQLiteProvider>
   );
 }

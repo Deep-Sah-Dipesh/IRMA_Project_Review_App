@@ -33,6 +33,7 @@ const safeDecode = (val: any): string => {
 export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
+  const db = SQLite.useSQLiteContext();
   
   const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
   const rawTenderId = Array.isArray(params.tender_id) ? params.tender_id[0] : params.tender_id;
@@ -41,11 +42,14 @@ export default function ProjectDetails() {
   const tenderId = safeDecode(rawTenderId);
   
   const [loading, setLoading] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
   
   const [latestObs, setLatestObs] = useState<any[]>([]);
   const [prevObs, setPrevObs] = useState<any[]>([]);
+  const [showAllObs, setShowAllObs] = useState(false);
+  const [isScopeExpanded, setIsScopeExpanded] = useState(false);
   
   const [visits, setVisits] = useState<string[]>([]);
   const [activeVisit, setActiveVisit] = useState<string | null>(null);
@@ -53,12 +57,14 @@ export default function ProjectDetails() {
 
   useEffect(() => {
     let isMounted = true;
-    if (projectId && tenderId) {
-      loadAllData(isMounted);
-    } else {
-      const timeout = setTimeout(() => { if(isMounted) setLoading(false); }, 800);
+
+    if (!projectId || !tenderId || projectId === '' || tenderId === '') {
+      const timeout = setTimeout(() => { if (isMounted) setLoading(false); }, 1000);
       return () => clearTimeout(timeout);
     }
+
+    loadAllData(isMounted);
+
     return () => { isMounted = false; };
   }, [projectId, tenderId]);
 
@@ -67,42 +73,58 @@ export default function ProjectDetails() {
     
     setLoading(true);
     setDbError(null);
+    setRetryCount(0);
+
+    const maxRetries = 3;
+    const pId = String(projectId);
+    const tId = String(tenderId);
+
+    // CRASH FIX: Isolate DB execution in a retry block with exponential backoff.
+    // We delay the first execution by 400ms to let the router's transition animation finish, 
+    // stopping the Native Bridge from throwing NullPointerExceptions.
+    const executeDbQueries = async () => {
+      await new Promise(resolve => setTimeout(resolve, 400)); 
+
+      let lastError;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        if (!isMounted) return null;
+        try {
+          if (attempt > 0) setRetryCount(attempt);
+
+          const projData = await db.getFirstAsync(
+            "SELECT * FROM tenders WHERE project_id = ? AND tender_id = ?",
+            [pId, tId]
+          );
+
+          const obsData = await db.getAllAsync(
+            "SELECT * FROM observations WHERE project_code = ?",
+            [pId]
+          ) as any[];
+
+          return { projData, obsData };
+        } catch (error: any) {
+          lastError = error;
+          console.warn(`[SQLite] Bridge attempt ${attempt + 1} failed. Retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1))); // Backoff
+        }
+      }
+      throw lastError;
+    };
 
     try {
-      // FIX 1: Add a tiny delay to let the Router transition animation finish.
-      // This stops the Native Bridge from panicking during fast component mounts.
-      await new Promise(resolve => setTimeout(resolve, 100));
+      const data = await executeDbQueries();
+      if (!isMounted || !data) return;
 
-      // FIX 2: Open an isolated DB connection specific to this exact fetch.
-      // Do not use the Context Provider.
-      const db = await SQLite.openDatabaseAsync('civil_projects.db');
-      
-      const pId = String(projectId);
-      const tId = String(tenderId);
-
-      // Strict String Array Bindings
-      const projData = await db.getFirstAsync(
-        "SELECT * FROM tenders WHERE project_id = ? AND tender_id = ?",
-        [pId, tId]
-      );
-      
-      if (!isMounted) return;
-      
-      if (!projData) {
+      if (!data.projData) {
         setProject(null);
         setLoading(false);
         return; 
       }
       
-      setProject(projData);
-
-      const obsData = await db.getAllAsync(
-        "SELECT * FROM observations WHERE project_code = ?",
-        [pId]
-      );
+      setProject(data.projData);
       
-      if (obsData && obsData.length > 0 && isMounted) {
-        const sortedObs = [...obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
+      if (data.obsData && data.obsData.length > 0) {
+        const sortedObs = [...data.obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
         const newestTimestamp = parseDateString(sortedObs[0].visit_date);
         
         const recent = sortedObs.filter((o: any) => parseDateString(o.visit_date) === newestTimestamp);
@@ -112,17 +134,15 @@ export default function ProjectDetails() {
         setPrevObs(older);
       }
 
-      await scanExistingVisits(projectId, tenderId);
+      await scanExistingVisits(pId, tId);
 
     } catch (error: any) {
       console.error("Database Interruption:", error);
-      if (isMounted) {
-        setDbError(error.message || "Failed to initialize the database connection safely.");
-      }
+      if (isMounted) setDbError(error.message || "Database connection repeatedly dropped.");
     } finally {
       if (isMounted) setLoading(false);
     }
-  }, [projectId, tenderId]);
+  }, [projectId, tenderId, db]);
 
   const getBaseDirectory = (pId: string, tId: string) => {
     const sanitizedFolder = `${pId}_${tId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -138,9 +158,7 @@ export default function ProjectDetails() {
         const files = await FileSystem.readDirectoryAsync(baseUri);
         const visitDirs = files.filter(f => f.startsWith('visit_')).sort();
         setVisits(visitDirs);
-        if (visitDirs.length > 0) {
-          setActiveVisit(visitDirs[visitDirs.length - 1]);
-        }
+        if (visitDirs.length > 0) setActiveVisit(visitDirs[visitDirs.length - 1]);
       }
     } catch (error) {
       console.error("Failed to scan visits:", error);
@@ -153,9 +171,7 @@ export default function ProjectDetails() {
     try {
       const baseUri = getBaseDirectory(projectId, tenderId);
       const dirInfo = await FileSystem.getInfoAsync(baseUri);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(baseUri, { intermediates: true });
-      }
+      if (!dirInfo.exists) await FileSystem.makeDirectoryAsync(baseUri, { intermediates: true });
 
       const visitNumber = visits.length + 1;
       const timestamp = getFormattedDateTime();
@@ -168,9 +184,8 @@ export default function ProjectDetails() {
       setVisits(newVisitsList);
       setActiveVisit(newVisitName); 
       
-      Alert.alert("New Visit Created", `Session securely locked to:\n${newVisitName}`);
+      Alert.alert("New Visit Created", `Session successfully selected as:\n${newVisitName}`);
     } catch (error) {
-      console.error("Failed to create visit directory:", error);
       Alert.alert("Error", "Could not create visit directory.");
     }
   };
@@ -178,12 +193,12 @@ export default function ProjectDetails() {
   const selectVisit = (visitName: string) => {
     setActiveVisit(visitName);
     setShowVisitModal(false);
-    Alert.alert("Session Locked", `All media captures will be routed to:\n${visitName}`);
+    Alert.alert("Session Selected", `All media captures will be routed to:\n${visitName}`);
   };
 
   const handleMultimediaAction = async (actionName: string, subfolder: string) => {
     if (!activeVisit || !projectId || !tenderId) {
-      Alert.alert("No Visit Active", "Please 'Create New Visit' or 'Select Past Visit' before proceeding.");
+      Alert.alert("No Visit Active", "Please 'Create New' or 'Select Past Visit' before proceeding.");
       return;
     }
     
@@ -191,14 +206,13 @@ export default function ProjectDetails() {
       const baseUri = getBaseDirectory(projectId, tenderId);
       const targetFolderUri = `${baseUri}${activeVisit}/${subfolder}/`;
       
-      const dirInfo = await FileSystem.getInfoAsync(targetFolderUri);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(targetFolderUri, { intermediates: true });
+      if (subfolder !== '') {
+        const dirInfo = await FileSystem.getInfoAsync(targetFolderUri);
+        if (!dirInfo.exists) await FileSystem.makeDirectoryAsync(targetFolderUri, { intermediates: true });
       }
       
-      Alert.alert(`${actionName} Ready`, `Media securely routed to:\n.../${activeVisit}/${subfolder}/`);
+      Alert.alert(`${actionName}`, `Media securely routed to:\n.../${activeVisit}/${subfolder}`);
     } catch (error) {
-      console.error(`Failed to provision ${subfolder} folder:`, error);
       Alert.alert("System Error", "Could not mount the required file system structure.");
     }
   };
@@ -207,7 +221,9 @@ export default function ProjectDetails() {
     return (
       <View style={styles.centerLoading}>
         <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text>
+        <Text style={{ marginTop: 10, color: '#64748B', fontWeight: '500' }}>
+          {retryCount > 0 ? `Re-establishing connection (${retryCount}/3)...` : 'Fetching Project Details...'}
+        </Text>
       </View>
     );
   }
@@ -217,15 +233,11 @@ export default function ProjectDetails() {
       <View style={styles.centerLoading}>
         <Ionicons name="warning" size={48} color="#EF4444" style={{ marginBottom: 10 }} />
         <Text style={styles.errorText}>Connection Interrupted</Text>
-        <Text style={{ marginTop: 5, color: '#64748B', textAlign: 'center', paddingHorizontal: 30, marginBottom: 20 }}>
-          The database connection dropped during navigation.
-        </Text>
-        
+        <Text style={{ marginTop: 5, color: '#64748B', textAlign: 'center', paddingHorizontal: 30, marginBottom: 20 }}>{dbError}</Text>
         <TouchableOpacity onPress={() => loadAllData(true)} style={[styles.goBackBtn, { backgroundColor: '#10B981', marginBottom: 10 }]}>
           <Ionicons name="refresh" size={16} color="#FFF" style={{marginRight: 6}} />
           <Text style={{color: '#FFF', fontWeight: 'bold'}}>Retry / Refresh Data</Text>
         </TouchableOpacity>
-
         <TouchableOpacity onPress={() => router.back()} style={[styles.goBackBtn, { backgroundColor: '#64748B' }]}>
           <Ionicons name="arrow-back" size={16} color="#FFF" style={{marginRight: 6}} />
           <Text style={{color: '#FFF', fontWeight: 'bold'}}>Return to Dashboard</Text>
@@ -238,13 +250,14 @@ export default function ProjectDetails() {
     return (
       <View style={styles.centerLoading}>
         <Text style={styles.errorText}>Project Record Not Found</Text>
-        <Text style={{ marginTop: 5, color: '#64748B' }}>Ensure the project exists in the current CSV index.</Text>
         <TouchableOpacity onPress={() => router.back()} style={styles.goBackBtn}>
           <Text style={{color: '#FFF', fontWeight: 'bold'}}>Return to Dashboard</Text>
         </TouchableOpacity>
       </View>
     );
   }
+
+  const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
 
   return (
     <View style={styles.container}>
@@ -309,14 +322,27 @@ export default function ProjectDetails() {
             </View>
           </View>
 
+          {/* SCOPE OF WORK WITH TOGGLE */}
           <View style={styles.scopeBox}>
-            <Text style={styles.dataLabel}>Brief Scope of Work</Text>
-            <Text style={styles.scopeText}>{project.scope || 'No scope details available.'}</Text>
+            <Text style={[styles.dataLabel, { textAlign: 'center', marginBottom: 6 }]}>Brief Scope of Work</Text>
+            <Text 
+              style={[styles.scopeText, { textAlign: 'center' }]}
+              numberOfLines={isScopeExpanded ? undefined : 5}
+            >
+              {project.scope || 'No scope details available.'}
+            </Text>
+            {project.scope && project.scope.length > 100 && (
+              <TouchableOpacity onPress={() => setIsScopeExpanded(!isScopeExpanded)} style={{ marginTop: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#2563EB', fontSize: 12, fontWeight: '700' }}>
+                  {isScopeExpanded ? 'View Less' : 'View More'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
         <View style={styles.visitContainer}>
-          <Text style={styles.sectionTitle}>Field Visit Session</Text>
+          <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Field Visit Session</Text>
           
           <View style={styles.visitControls}>
             <TouchableOpacity 
@@ -338,24 +364,32 @@ export default function ProjectDetails() {
 
           {activeVisit ? (
             <View style={styles.activeVisitBox}>
-              <Ionicons name="shield-checkmark" size={16} color="#15803D" style={{ marginRight: 6 }} />
-              <Text style={styles.activeVisitText}>Locked: <Text style={{fontWeight: 'bold'}}>{activeVisit}</Text></Text>
+              <Ionicons name="checkmark-circle" size={20} color="#15803D" style={{ marginRight: 8 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.activeVisitLabel}>Selected Visit</Text>
+                <Text style={styles.activeVisitText} numberOfLines={1}>{activeVisit}</Text>
+              </View>
             </View>
           ) : (
             <Text style={styles.noVisitText}>Select or Create a visit report session to unlock media buttons.</Text>
           )}
 
           <View style={[styles.actionGrid, !activeVisit && { opacity: 0.3 }]}>
-            <ActionButton icon="camera" label="Take Photo" color="#2563EB" onPress={() => handleMultimediaAction('Camera Mounted', 'photos')} disabled={!activeVisit} />
-            <ActionButton icon="videocam" label="Record Video" color="#DB2777" onPress={() => handleMultimediaAction('Video Mounted', 'videos')} disabled={!activeVisit} />
-            <ActionButton icon="mic" label="Voice Note" color="#EA580C" onPress={() => handleMultimediaAction('Microphone Mounted', 'audio')} disabled={!activeVisit} />
-            <ActionButton icon="chatbubble-ellipses" label="Comment" color="#059669" onPress={() => handleMultimediaAction('Comment Logged', 'comments')} disabled={!activeVisit} />
-            <ActionButton icon="attach" label="Attach File" color="#7C3AED" onPress={() => handleMultimediaAction('File Selected', 'documents')} disabled={!activeVisit} />
-            <ActionButton icon="location" label="Geotag" color="#0891B2" onPress={() => handleMultimediaAction('Location Saved', 'location')} disabled={!activeVisit} />
+            <ActionButton icon="chatbubble-ellipses" label="Text Comment" color="#059669" onPress={() => handleMultimediaAction('Comment', 'comments')} disabled={!activeVisit} />
+            <ActionButton icon="mic" label="Voice Note" color="#EA580C" onPress={() => handleMultimediaAction('Voice Note', 'audio')} disabled={!activeVisit} />
+            <ActionButton icon="attach" label="Attach File" color="#7C3AED" onPress={() => handleMultimediaAction('Attach File', 'documents')} disabled={!activeVisit} />
+            
+            <ActionButton icon="camera" label="Take Photo" color="#2563EB" onPress={() => handleMultimediaAction('Camera', 'photos')} disabled={!activeVisit} />
+            <ActionButton icon="videocam" label="Record Video" color="#DB2777" onPress={() => handleMultimediaAction('Video', 'videos')} disabled={!activeVisit} />
+            <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={() => handleMultimediaAction('Geotag', 'location')} disabled={!activeVisit} />
+            
+            <ActionButton icon="image" label="Geotagged Photo" color="#0284C7" onPress={() => handleMultimediaAction('Geo Photo', 'geotagged_photos')} disabled={!activeVisit} />
+            <ActionButton icon="film" label="Geotagged Video" color="#9333EA" onPress={() => handleMultimediaAction('Geo Video', 'geotagged_videos')} disabled={!activeVisit} />
+            <ActionButton icon="folder-open" label="Show Files" color="#475569" onPress={() => handleMultimediaAction('Open Directory', '')} disabled={!activeVisit} />
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>IRMA Observations</Text>
+        <Text style={[styles.sectionTitle, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
         
         {latestObs.length === 0 && prevObs.length === 0 ? (
           <View style={styles.card}>
@@ -365,15 +399,24 @@ export default function ProjectDetails() {
           <View>
             {latestObs.length > 0 && (
               <View style={{ marginBottom: 15 }}>
-                <Text style={styles.subSectionTitle}>Most Recent ({latestObs[0].visit_date})</Text>
+                <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Most Recent ({latestObs[0].visit_date})</Text>
                 {latestObs.map((obs, idx) => <ObservationCard key={`latest_${idx}`} obs={obs} />)}
               </View>
             )}
 
             {prevObs.length > 0 && (
               <View>
-                <Text style={styles.subSectionTitle}>Previous Observations</Text>
-                {prevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
+                <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Previous Observations</Text>
+                {displayedPrevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
+                
+                {prevObs.length > 5 && (
+                  <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={styles.viewMoreBtn}>
+                    <Text style={styles.viewMoreText}>
+                      {showAllObs ? 'View Less' : `View More Observations (${prevObs.length - 5})`}
+                    </Text>
+                    <Ionicons name={showAllObs ? "chevron-up" : "chevron-down"} size={14} color="#2563EB" style={{marginLeft: 4}}/>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
           </View>
@@ -401,7 +444,7 @@ export default function ProjectDetails() {
                       style={[styles.modalItem, activeVisit === item && { backgroundColor: '#EFF6FF' }]} 
                       onPress={() => selectVisit(item)}
                     >
-                      <Ionicons name={activeVisit === item ? "shield-checkmark" : "folder-outline"} size={20} color={activeVisit === item ? "#2563EB" : "#64748B"} style={{marginRight: 10}} />
+                      <Ionicons name={activeVisit === item ? "checkmark-circle" : "folder-outline"} size={20} color={activeVisit === item ? "#2563EB" : "#64748B"} style={{marginRight: 10}} />
                       <Text style={[styles.modalItemText, activeVisit === item && { color: '#2563EB', fontWeight: 'bold' }]}>{item}</Text>
                     </TouchableOpacity>
                   )}
@@ -468,23 +511,28 @@ const styles = StyleSheet.create({
   dataLabel: { fontSize: 11, color: '#64748B', fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
   dataValue: { fontSize: 14, color: '#334155', fontWeight: '600' },
   
-  scopeBox: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 8, marginTop: 5, borderWidth: 1, borderColor: '#E2E8F0' },
-  scopeText: { fontSize: 13, color: '#475569', lineHeight: 22, marginTop: 4 },
+  scopeBox: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 8, marginTop: 5, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center' },
+  scopeText: { fontSize: 13, color: '#475569', lineHeight: 22 },
 
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A', marginBottom: 12, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
-  subSectionTitle: { fontSize: 12, fontWeight: '700', color: '#64748B', marginBottom: 8, marginTop: 5, textTransform: 'uppercase' },
+  sectionTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  subSectionTitle: { fontSize: 13, fontWeight: '700', color: '#64748B', marginBottom: 10, marginTop: 5, textTransform: 'uppercase' },
+  viewMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, marginTop: 5, backgroundColor: '#EFF6FF', borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
+  viewMoreText: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },
 
   visitContainer: { backgroundColor: '#FFF', padding: 16, borderRadius: 16, marginBottom: 25, borderWidth: 1, borderColor: '#E2E8F0' },
   visitControls: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
   visitBtn: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  activeVisitBox: { flexDirection: 'row', backgroundColor: '#DCFCE7', padding: 12, borderRadius: 8, alignItems: 'center', marginBottom: 15, borderWidth: 1, borderColor: '#BBF7D0' },
-  activeVisitText: { color: '#166534', fontSize: 13, flex: 1 },
+  
+  activeVisitBox: { flexDirection: 'row', backgroundColor: '#DCFCE7', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#BBF7D0' },
+  activeVisitLabel: { color: '#166534', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginBottom: 2 },
+  activeVisitText: { color: '#14532D', fontSize: 15, fontWeight: '800' },
+  
   noVisitText: { color: '#94A3B8', fontSize: 13, textAlign: 'center', marginBottom: 15, fontStyle: 'italic' },
 
   actionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between' },
-  actionBtn: { width: '31%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  actionBtn: { width: '31%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 2 },
   actionIconWrap: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  actionLabel: { fontSize: 11, fontWeight: '600', color: '#475569', textAlign: 'center' },
+  actionLabel: { fontSize: 10, fontWeight: '700', color: '#475569', textAlign: 'center' },
 
   obsCard: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', borderLeftWidth: 5, borderLeftColor: '#334155' },
   obsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
