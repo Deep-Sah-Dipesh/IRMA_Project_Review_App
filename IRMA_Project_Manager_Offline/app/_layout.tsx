@@ -17,9 +17,9 @@ export default function RootLayout() {
         const db = await SQLite.openDatabaseAsync('civil_projects.db');
         await db.execAsync(`PRAGMA journal_mode = WAL;`);
 
+        // Create base tables if they don't exist
         await db.execAsync(`
           CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
-          
           CREATE TABLE IF NOT EXISTS tenders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id TEXT, ulb TEXT, state TEXT, district TEXT, 
@@ -27,7 +27,6 @@ export default function RootLayout() {
             nit_date TEXT, award_date TEXT, bidder_name TEXT, capex TEXT, 
             onm TEXT, scope TEXT, physical_progress TEXT, financial_progress TEXT
           );
-          
           CREATE TABLE IF NOT EXISTS observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT, project_code TEXT, state TEXT, 
             ulb TEXT, project_type TEXT, project_title TEXT, visit_date TEXT, 
@@ -35,27 +34,20 @@ export default function RootLayout() {
           );
         `);
 
-        const expected = getExpectedCounts();
+        // 🚀 FASTER STARTUP: Check if DB is already seeded to avoid massive re-parsing delays
+        const isSeeded = await db.getFirstAsync<{value: string}>("SELECT value FROM metadata WHERE key = 'last_sync'");
         
-        let actualTenders = 0;
-        let actualObs = 0;
-        
-        try {
-          const tCount = await db.getFirstAsync<{c: number}>("SELECT COUNT(*) as c FROM tenders");
-          const oCount = await db.getFirstAsync<{c: number}>("SELECT COUNT(*) as c FROM observations");
-          actualTenders = tCount?.c || 0;
-          actualObs = oCount?.c || 0;
-        } catch (e) {
-          // Ignore
+        if (isSeeded && isSeeded.value) {
+          console.log("Database already synced. Fast booting...");
+          setIsReady(true);
+          await SplashScreen.hideAsync();
+          return;
         }
 
-        if (actualTenders !== expected.tenders || actualObs !== expected.observations) {
-          console.log(`Dataset Mismatch! Expected ${expected.tenders} projects, found ${actualTenders}. Resyncing...`);
-          await syncStaticData();
-        } else {
-          console.log(`Database Verified: 100% Match. Loaded ${actualTenders} projects and ${actualObs} observations.`);
-        }
-
+        // If not seeded, run the heavy migration
+        console.log("First time setup: Syncing dataset...");
+        await syncStaticData();
+        
         setIsReady(true);
       } catch (e: any) {
         console.error("Init Error:", e);
@@ -78,7 +70,6 @@ export default function RootLayout() {
 
   if (!isReady) return null;
 
-  // CRITICAL FIX: Wrapping the app in SQLiteProvider prevents connection drops during navigation
   return (
     <SQLite.SQLiteProvider databaseName="civil_projects.db">
       <Stack screenOptions={{ headerShown: false }}>
