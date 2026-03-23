@@ -20,7 +20,7 @@ export default function TabLayout() {
         }}
       />
       {/* Fallback to hide standard explore/old tabs */}
-      <Tabs.Screen name="explore" options={{ href: null }} />
+      {/* <Tabs.Screen name="explore" options={{ href: null }} /> */}
     </Tabs>
   );
 }

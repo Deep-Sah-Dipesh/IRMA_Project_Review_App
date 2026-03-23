@@ -156,7 +156,13 @@ export default function ProjectsTab() {
   const renderItem = useCallback(({ item }: { item: Tender }) => (
     <TenderCard 
       item={item} 
-      onPress={() => router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id)}`)} 
+      onPress={() => {
+        // CRITICAL FIX: Using Object routing guarantees safe parameter passing and prevents "undefined" ghost folders
+        router.push({
+          pathname: '/project/[id]',
+          params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' }
+        });
+      }} 
     />
   ), [router]);
 
@@ -172,16 +178,13 @@ export default function ProjectsTab() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        {/* Main Header Row */}
         <View style={styles.headerRow}>
           <Text style={styles.title}>All Projects</Text>
-          
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>
               <Ionicons name="search" size={16} color="#1E293B" />
               <Text style={{marginLeft: 4, fontSize: 13, fontWeight: '600', color: '#1E293B'}}>Search</Text>
             </TouchableOpacity>
-
             <TouchableOpacity 
               style={[styles.sortBtn, sortBy ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}]} 
               onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}
@@ -189,7 +192,6 @@ export default function ProjectsTab() {
               <Ionicons name="swap-vertical" size={16} color="#475569" />
               <Text style={styles.sortBtnText}>{sortBy ? sortOptions.find(o => o.toLowerCase().includes(sortBy)) || 'Sort By' : 'Sort By'}</Text>
             </TouchableOpacity>
-            
             {sortBy !== '' && (
               <TouchableOpacity style={styles.sortDirectionBtn} onPress={() => setSortOrder(p => p === 'asc' ? 'desc' : 'asc')}>
                 <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2563EB" />
@@ -198,7 +200,6 @@ export default function ProjectsTab() {
           </View>
         </View>
 
-        {/* Collapsible Search Bar (Appears below the header row) */}
         {isSearchActive && (
           <View style={styles.activeSearchBar}>
             <Ionicons name="search" size={20} color="#64748B" />

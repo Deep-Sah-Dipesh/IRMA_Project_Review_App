@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -17,6 +17,7 @@ import ViewShot from 'react-native-view-shot';
 interface VisitManagerProps {
   projectId: string;
   tenderId: string;
+  folderName: string; // UNIFIED PATH: Received directly from [id].tsx
   onEdit?: () => void;
 }
 
@@ -41,8 +42,7 @@ const get12HourTime = (d: Date) => {
   return `${dayNames[d.getDay()]}, ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(h12)}:${pad(d.getMinutes())} ${ampm} GMT ${sign}${offH}:${offM}`;
 };
 
-export default function VisitManager({ projectId, tenderId, onEdit }: VisitManagerProps) {
-  // CRITICAL FIX: Use React Hook for dimensions to prevent hot-reload ReferenceErrors and fix initial camera distortion
+export default function VisitManager({ projectId, tenderId, folderName, onEdit }: VisitManagerProps) {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const CAMERA_HEIGHT = SCREEN_WIDTH * (4 / 3);
 
@@ -53,6 +53,7 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   const [fileStats, setFileStats] = useState<Record<string, number>>({ total: 0 });
   const [showFilesModal, setShowFilesModal] = useState(false);
   const [savedFiles, setSavedFiles] = useState<{name: string, folder: string, time: number, size: number}[]>([]);
+  const [totalSessionSize, setTotalSessionSize] = useState(0); // For header display
   
   const [filterType, setFilterType] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'Date' | 'Name'>('Date');
@@ -73,7 +74,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
   const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
   
-  // Persistent Background Location Storage ensures zero-lag camera launches
   const sessionGeoDataRef = useRef<any>(null);
   const [liveGeoData, setLiveGeoData] = useState<any>(null);
   
@@ -85,9 +85,10 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
   const viewShotRef = useRef<ViewShot>(null);
 
-  const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${projectId}_${tenderId}/`;
+  // Uses unified folderName to prevent Dashboard missing active visits
+  const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${folderName}/`;
 
-  useEffect(() => { scanExistingVisits(); }, [projectId, tenderId]);
+  useEffect(() => { scanExistingVisits(); }, [folderName]);
   useEffect(() => { if (activeVisit) updateFileStats(); }, [activeVisit]);
 
   useEffect(() => {
@@ -107,7 +108,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
     return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); };
   }, [recording]);
 
-  // Global Background GPS Tracker: Ensures location is always fresh so camera opens instantly
   useEffect(() => {
     let sub: Location.LocationSubscription;
     (async () => {
@@ -144,7 +144,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
     return () => { if (sub) sub.remove(); }
   }, []);
 
-  // Background Watermark Stamping
   useEffect(() => {
     if (stampingPhoto && viewShotRef.current) {
       setTimeout(async () => {
@@ -401,7 +400,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       setCameraMode(mode);
       setShowLiveCamera(true);
 
-      // Instant UI response using background tracker
       if (!liveGeoData && !sessionGeoDataRef.current) {
          const fb = await getFallbackGeoData();
          setLiveGeoData(fb);
@@ -442,7 +440,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       } else {
         const photo = await cameraRef.takePictureAsync();
         if (photo) {
-          // Offscreen baking prevents UI blocking allowing multiple consecutive captures
           setStampingPhoto({ uri: photo.uri, geoData: safeGeoData });
         }
       }
@@ -501,9 +498,11 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
     try {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
       const info = await FileSystem.getInfoAsync(visitUri);
-      if (!info.exists) { setSavedFiles([]); return; }
+      if (!info.exists) { setSavedFiles([]); setTotalSessionSize(0); return; }
       
       let allFiles: {name: string, folder: string, time: number, size: number}[] = [];
+      let totalSize = 0;
+
       const checkFolders = ['notes', 'attachments', 'geotagged_captures', ''];
       
       for (const folder of checkFolders) {
@@ -512,17 +511,18 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
         if (subInfo.exists && subInfo.isDirectory) {
           const files = await FileSystem.readDirectoryAsync(subUri);
           for(const f of files) {
-             if(!f.endsWith('.json') && !f.startsWith('visit_')) {
+             if(!f.endsWith('.json') && !f.startsWith('VISIT_')) {
                 const fileStat = await FileSystem.getInfoAsync(`${subUri}${f}`);
-                // CRITICAL FIX: Only add true files to the explorer, ignoring directories themselves
                 if (!fileStat.isDirectory) {
                   allFiles.push({ name: f, folder: folder || 'root', time: fileStat.modificationTime || 0, size: fileStat.size || 0 });
+                  totalSize += fileStat.size || 0;
                 }
              }
           }
         }
       }
       setSavedFiles(allFiles);
+      setTotalSessionSize(totalSize);
     } catch (e) {}
   };
 
@@ -683,7 +683,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
         <ActionButton icon="chatbubble-ellipses" label="Text Comment" color="#059669" onPress={() => setShowCommentModal(true)} />
         <ActionButton icon="attach" label="Attach File" color="#7C3AED" onPress={handleAttachFile} />
         
-        {/* Only camera tools disabled when recording audio */}
         <ActionButton icon="film" label="Geotag Video" color="#9333EA" onPress={() => openLiveGeotagCamera('video')} disabled={recording !== null} />
         <ActionButton icon="image" label="Geotag Photo" color="#0284C7" onPress={() => openLiveGeotagCamera('picture')} disabled={recording !== null} />
         <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={handlePinGeotag} disabled={recording !== null} />
@@ -693,25 +692,18 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
         <ActionButton icon="folder-open" label="Show Files" color="#475569" onPress={openFilesExplorer} />
       </View>
 
-      {/* --- LIVE CAMERA MODAL --- */}
       <Modal visible={showLiveCamera} transparent animationType="none">
          <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center' }}>
-            
-            {/* The 4:3 Fixed Aspect Ratio Container */}
             <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
               <CameraView ref={setCameraRef} style={StyleSheet.absoluteFillObject} mode={cameraMode} facing={cameraFacing} />
-              
               <View style={StyleSheet.absoluteFillObject}>
                  <View style={{ flex: 1, padding: 10, justifyContent: 'space-between' }}>
                     <View style={{ alignItems: 'center', paddingTop: 10 }} />
-                    
-                    {/* Placed inside 4:3 box exactly at the bottom matching reference */}
                     <View style={{ paddingBottom: 5 }}>
                       {liveGeoData && <GPSCameraOverlay geoData={liveGeoData} />}
                     </View>
                  </View>
               </View>
-
               {flashMessage && (
                  <View style={{ position: 'absolute', top: '40%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20, borderRadius: 12 }}>
                     <Ionicons name="checkmark-circle" size={48} color="#10B981" style={{ alignSelf: 'center', marginBottom: 10 }} />
@@ -720,7 +712,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
               )}
             </View>
             
-            {/* Controls Placed safely below the 4:3 frame in the black padding area */}
             <View style={[styles.cameraControlsContainer, { position: 'absolute', bottom: 0, width: '100%' }]}>
                <TouchableOpacity onPress={closeLiveCamera} style={styles.cameraSideBtn}>
                  <Ionicons name="close" size={36} color="#FFF" />
@@ -756,7 +747,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
          </View>
       </Modal>
 
-      {/* --- PHYSICAL PHOTO WATERMARK STAMPING MODAL --- */}
       <View style={{ position: 'absolute', left: -10000 }}>
         {stampingPhoto && (
           <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
@@ -768,7 +758,6 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
         )}
       </View>
 
-      {/* --- OTHER MODALS --- */}
       <Modal visible={showVisitModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowVisitModal(false)}>
           <View style={styles.modalOverlay}>
@@ -809,7 +798,7 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
             <TouchableWithoutFeedback>
               <View style={[styles.modalContent, { maxHeight: '85%' }]}>
                 <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Files in Session</Text>
+                  <Text style={styles.modalTitle}>Files in Session ({formatBytes(totalSessionSize)})</Text>
                   <TouchableOpacity onPress={() => setShowFilesModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
                 </View>
                 
@@ -939,7 +928,6 @@ const AudioPreview = ({ uri }: { uri: string }) => {
   );
 };
 
-// Accurately replicates the GPS Map Camera UI: Map block detached, matching height, padded perfectly
 const GPSCameraOverlay = ({ geoData }: { geoData: any }) => {
   const isInvalid = geoData.lat === "0.000000";
   const mapUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=15&size=150x150&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
@@ -1040,8 +1028,6 @@ const styles = StyleSheet.create({
   cameraStopBtn: { padding: 15, backgroundColor: 'rgba(239, 68, 68, 0.2)', borderRadius: 30, borderWidth: 2, borderColor: '#EF4444' },
   camTimerText: { color: '#FFF', fontSize: 18, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
   
-  // GPS Overlay - Perfected Layout matching user screenshot exactly
-  gpsFetchingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   gpsOverlayContainer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 5, paddingBottom: 5 },
   gpsMapSquare: { width: 90, height: 90, backgroundColor: '#E2E8F0', borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#FFF', marginRight: 10, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3, zIndex: 2 },
   googleWatermark: { position: 'absolute', bottom: 4, left: 6, color: '#FFF', fontSize: 12, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
