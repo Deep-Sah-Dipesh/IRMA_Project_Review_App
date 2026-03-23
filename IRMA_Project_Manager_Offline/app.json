@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "IRMA_Project_Manager_Offline",
+    "name": "IRMA Project Manager Offline",
     "slug": "IRMA_Project_Manager_Offline",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -19,7 +19,15 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "package": "com.deepsah.irmaprojectmanager"
     },
     "web": {
       "output": "static",
@@ -41,11 +49,29 @@
       ],
       "expo-sqlite",
       "expo-video",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libc++_shared.so"
+              ]
+            }
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f3bd0d84-49ee-4231-a9a9-9b26e4b4e10e"
+      }
     }
   }
 }

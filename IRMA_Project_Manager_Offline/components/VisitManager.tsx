@@ -1,20 +1,18 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, ActivityIndicator, Dimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as Location from 'expo-location';
 import * as IntentLauncher from 'expo-intent-launcher';
+import * as Linking from 'expo-linking';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useAudioPlayer } from 'expo-audio';
 import { Audio } from 'expo-av';
 import ViewShot from 'react-native-view-shot';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CAMERA_HEIGHT = SCREEN_WIDTH * (4 / 3); 
 
 interface VisitManagerProps {
   projectId: string;
@@ -44,6 +42,10 @@ const get12HourTime = (d: Date) => {
 };
 
 export default function VisitManager({ projectId, tenderId, onEdit }: VisitManagerProps) {
+  // CRITICAL FIX: Use React Hook for dimensions to prevent hot-reload ReferenceErrors and fix initial camera distortion
+  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const CAMERA_HEIGHT = SCREEN_WIDTH * (4 / 3);
+
   const [visits, setVisits] = useState<string[]>([]);
   const [activeVisit, setActiveVisit] = useState<string | null>(null);
   const [showVisitModal, setShowVisitModal] = useState(false);
@@ -71,15 +73,16 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
   const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
   
+  // Persistent Background Location Storage ensures zero-lag camera launches
+  const sessionGeoDataRef = useRef<any>(null);
   const [liveGeoData, setLiveGeoData] = useState<any>(null);
-  const [isFetchingGPS, setIsFetchingGPS] = useState(false);
-  const locSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   
   const [isCameraRecording, setIsCameraRecording] = useState(false);
   const [camRecordTime, setCamRecordTime] = useState(0);
   const [isCameraPaused, setIsCameraPaused] = useState(false);
 
   const [stampingPhoto, setStampingPhoto] = useState<{ uri: string, geoData: any } | null>(null);
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
   const viewShotRef = useRef<ViewShot>(null);
 
   const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${projectId}_${tenderId}/`;
@@ -101,12 +104,47 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   }, [isCameraRecording, isCameraPaused]);
 
   useEffect(() => {
-    return () => { 
-      if (recording) recording.stopAndUnloadAsync().catch(() => {}); 
-      if (locSubscriptionRef.current) locSubscriptionRef.current.remove();
-    };
+    return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); };
   }, [recording]);
 
+  // Global Background GPS Tracker: Ensures location is always fresh so camera opens instantly
+  useEffect(() => {
+    let sub: Location.LocationSubscription;
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === 'granted') {
+        sub = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 10000, distanceInterval: 10 }, 
+        async (loc) => {
+          try {
+            const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+            const addressObj = geocode[0] || {};
+            const newData = {
+              lat: loc.coords.latitude.toFixed(6), 
+              lon: loc.coords.longitude.toFixed(6), 
+              timestamp: get12HourTime(new Date(loc.timestamp)),
+              address: `${addressObj.street || ''} ${addressObj.district || ''}, ${addressObj.city || ''} ${addressObj.postalCode || ''}`.trim() || 'Unknown Street',
+              city: addressObj.city || addressObj.subregion || 'Unknown City',
+              region: addressObj.region || 'Unknown Region',
+              country: addressObj.country || 'India'
+            };
+            sessionGeoDataRef.current = newData;
+            setLiveGeoData(newData);
+          } catch (e) {
+            const fallback = {
+              lat: loc.coords.latitude.toFixed(6), lon: loc.coords.longitude.toFixed(6), 
+              timestamp: get12HourTime(new Date(loc.timestamp)),
+              address: "Coordinates locked", city: "Local", region: "Cached", country: "India"
+            };
+            sessionGeoDataRef.current = fallback;
+            setLiveGeoData(fallback);
+          }
+        });
+      }
+    })();
+    return () => { if (sub) sub.remove(); }
+  }, []);
+
+  // Background Watermark Stamping
   useEffect(() => {
     if (stampingPhoto && viewShotRef.current) {
       setTimeout(async () => {
@@ -116,14 +154,15 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
              const targetDir = await ensureSubfolder('geotagged_captures');
              await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}img_geo_${getFormattedDateTime()}.jpg` });
              updateFileStats();
-             Alert.alert("Success", "Geotagged Photo saved with permanent watermark.");
+             setFlashMessage("Photo Saved!");
+             setTimeout(() => setFlashMessage(null), 2000);
           }
         } catch (e) {
-          Alert.alert("Watermark Error", "Failed to embed GPS overlay into photo.");
+          console.error("Watermark Error", e);
         } finally {
           setStampingPhoto(null);
         }
-      }, 500); 
+      }, 300); 
     }
   }, [stampingPhoto]);
 
@@ -317,25 +356,34 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
      try {
        const targetDir = `${getBaseDirectory()}${activeVisit}/`;
        const files = await FileSystem.readDirectoryAsync(targetDir);
-       const kmlFile = files.find(f => f.endsWith('.kml'));
-       if (kmlFile) {
-         const content = await FileSystem.readAsStringAsync(`${targetDir}${kmlFile}`);
+       const kmlFiles = files.filter(f => f.endsWith('.kml'));
+       if (kmlFiles.length > 0) {
+         const latestPin = kmlFiles.sort().reverse()[0];
+         const content = await FileSystem.readAsStringAsync(`${targetDir}${latestPin}`);
          const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
          if (coordMatch) {
            return {
              lat: parseFloat(coordMatch[2]).toFixed(6),
              lon: parseFloat(coordMatch[1]).toFixed(6),
              timestamp: get12HourTime(new Date()),
-             address: "Pinned Location (Offline mode)",
-             city: "Local", region: "Pinned", country: "India"
+             address: "Pinned Location Coordinates",
+             city: "Project", region: "Site", country: "India"
            };
+         }
+       }
+       const last = await Location.getLastKnownPositionAsync();
+       if (last) {
+         return {
+           lat: last.coords.latitude.toFixed(6), lon: last.coords.longitude.toFixed(6),
+           timestamp: get12HourTime(new Date(last.timestamp)),
+           address: "Cached Device Location", city: "Offline", region: "Mode", country: "India"
          }
        }
      } catch (e) {}
      return {
        lat: "0.000000", lon: "0.000000", 
        timestamp: get12HourTime(new Date()),
-       address: "Location Unknown", city: "-", region: "-", country: ""
+       address: "Location Services Unavailable", city: "-", region: "-", country: ""
      };
   };
 
@@ -351,46 +399,20 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       }
 
       setCameraMode(mode);
-      setLiveGeoData(null);
-      setIsFetchingGPS(true);
       setShowLiveCamera(true);
 
-      const { status: locStatus } = await Location.requestForegroundPermissionsAsync();
-      if (locStatus !== 'granted') {
-         setLiveGeoData(await getFallbackGeoData());
-         setIsFetchingGPS(false);
-         return;
+      // Instant UI response using background tracker
+      if (!liveGeoData && !sessionGeoDataRef.current) {
+         const fb = await getFallbackGeoData();
+         setLiveGeoData(fb);
+      } else if (sessionGeoDataRef.current && !liveGeoData) {
+         setLiveGeoData(sessionGeoDataRef.current);
       }
 
-      if (locSubscriptionRef.current) locSubscriptionRef.current.remove();
-      
-      locSubscriptionRef.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.Balanced, timeInterval: 5000, distanceInterval: 10 },
-        async (loc) => {
-          try {
-            const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-            const addressObj = geocode[0] || {};
-            setLiveGeoData({
-              lat: loc.coords.latitude.toFixed(6), 
-              lon: loc.coords.longitude.toFixed(6), 
-              timestamp: get12HourTime(new Date(loc.timestamp)),
-              address: `${addressObj.street || ''} ${addressObj.district || ''}, ${addressObj.city || ''} ${addressObj.postalCode || ''}`.trim(),
-              city: addressObj.city || addressObj.subregion || 'Unknown City',
-              region: addressObj.region || 'Unknown Region',
-              country: addressObj.country || 'India'
-            });
-            setIsFetchingGPS(false);
-          } catch (e) {
-            setLiveGeoData(await getFallbackGeoData());
-            setIsFetchingGPS(false);
-          }
-        }
-      );
     } catch (e) { Alert.alert("Camera Error", "Failed to launch camera interface."); }
   };
 
   const closeLiveCamera = () => {
-    if (locSubscriptionRef.current) locSubscriptionRef.current.remove();
     setShowLiveCamera(false);
     setIsCameraRecording(false);
   };
@@ -420,8 +442,8 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       } else {
         const photo = await cameraRef.takePictureAsync();
         if (photo) {
+          // Offscreen baking prevents UI blocking allowing multiple consecutive captures
           setStampingPhoto({ uri: photo.uri, geoData: safeGeoData });
-          closeLiveCamera();
         }
       }
     } catch (e) { Alert.alert("Capture Error", "Failed to save media."); }
@@ -444,14 +466,13 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
     try {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
       const existingFiles = await FileSystem.readDirectoryAsync(visitUri);
-      const hasKml = existingFiles.some(f => f.endsWith('.kml'));
+      const kmlFiles = existingFiles.filter(f => f.endsWith('.kml'));
 
       const savePin = async (replaceExisting: boolean) => {
         try {
-          if (replaceExisting) {
-            for (const file of existingFiles) {
-              if (file.endsWith('.kml')) await FileSystem.deleteAsync(`${visitUri}${file}`);
-            }
+          if (replaceExisting && kmlFiles.length > 0) {
+            const latestPin = kmlFiles.sort().reverse()[0];
+            await FileSystem.deleteAsync(`${visitUri}${latestPin}`);
           }
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status !== 'granted') return Alert.alert("Location Denied");
@@ -464,8 +485,8 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
         } catch (e) { Alert.alert("Error", "Failed to save Geotag Pin"); }
       };
 
-      if (hasKml) {
-        Alert.alert("Geotag Pin Exists", "A pinned KML location already exists for this visit.", [
+      if (kmlFiles.length > 0) {
+        Alert.alert("Geotag Pin Exists", "Pinned locations already exist for this visit.", [
           { text: "Cancel", style: "cancel" },
           { text: "Replace Latest", style: "destructive", onPress: () => savePin(true) },
           { text: "Add New", onPress: () => savePin(false) }
@@ -493,7 +514,10 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
           for(const f of files) {
              if(!f.endsWith('.json') && !f.startsWith('visit_')) {
                 const fileStat = await FileSystem.getInfoAsync(`${subUri}${f}`);
-                allFiles.push({ name: f, folder: folder || 'root', time: fileStat.modificationTime || 0, size: fileStat.size || 0 });
+                // CRITICAL FIX: Only add true files to the explorer, ignoring directories themselves
+                if (!fileStat.isDirectory) {
+                  allFiles.push({ name: f, folder: folder || 'root', time: fileStat.modificationTime || 0, size: fileStat.size || 0 });
+                }
              }
           }
         }
@@ -532,6 +556,17 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       const folderPath = folder === 'root' ? '' : `${folder}/`;
       const uri = `${getBaseDirectory()}${activeVisit}/${folderPath}${name}`;
       const ext = name.split('.').pop()?.toLowerCase() || '';
+
+      if (ext === 'kml') {
+         const content = await FileSystem.readAsStringAsync(uri);
+         const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
+         if (coordMatch) {
+            Linking.openURL(`https://maps.google.com/?q=${coordMatch[2]},${coordMatch[1]}`);
+         } else {
+            Alert.alert("Error", "Corrupted KML file.");
+         }
+         return;
+      }
 
       let type = 'doc';
       if (['txt', 'csv', 'json'].includes(ext)) type = 'text';
@@ -631,19 +666,24 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
             <View style={styles.redDot} />
             <Text style={styles.recordingTime}>{formatTime(recordTime)}</Text>
           </View>
-          <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#FEE2E2' }]} onPress={stopRecording}>
-            <Ionicons name="square" size={20} color="#EF4444" />
-            <Text style={{color: '#EF4444', fontWeight: 'bold', marginLeft: 6}}>Stop & Save</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#EFF6FF', marginRight: 10 }]} onPress={togglePauseRecording}>
+                <Ionicons name={isRecordingPaused ? "play" : "pause"} size={20} color="#2563EB" />
+             </TouchableOpacity>
+             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#FEE2E2' }]} onPress={stopRecording}>
+               <Ionicons name="square" size={20} color="#EF4444" />
+               <Text style={{color: '#EF4444', fontWeight: 'bold', marginLeft: 6}}>Stop & Save</Text>
+             </TouchableOpacity>
+          </View>
         </View>
       )}
 
-      {/* NON-BLOCKING GRID */}
       <View style={[styles.actionGrid, !activeVisit && { opacity: 0.3 }]} pointerEvents={!activeVisit ? 'none' : 'auto'}>
         <ActionButton icon={recording ? "stop-circle" : "mic"} label={recording ? "Recording..." : "Voice Note"} color={recording ? "#EF4444" : "#EA580C"} onPress={handleVoiceNote} />
         <ActionButton icon="chatbubble-ellipses" label="Text Comment" color="#059669" onPress={() => setShowCommentModal(true)} />
         <ActionButton icon="attach" label="Attach File" color="#7C3AED" onPress={handleAttachFile} />
         
+        {/* Only camera tools disabled when recording audio */}
         <ActionButton icon="film" label="Geotag Video" color="#9333EA" onPress={() => openLiveGeotagCamera('video')} disabled={recording !== null} />
         <ActionButton icon="image" label="Geotag Photo" color="#0284C7" onPress={() => openLiveGeotagCamera('picture')} disabled={recording !== null} />
         <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={handlePinGeotag} disabled={recording !== null} />
@@ -655,47 +695,53 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
 
       {/* --- LIVE CAMERA MODAL --- */}
       <Modal visible={showLiveCamera} transparent animationType="none">
-         <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'flex-start' }}>
+         <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center' }}>
             
-            {/* The 4:3 Fixed Aspect Ratio Viewfinder Container */}
+            {/* The 4:3 Fixed Aspect Ratio Container */}
             <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
               <CameraView ref={setCameraRef} style={StyleSheet.absoluteFillObject} mode={cameraMode} facing={cameraFacing} />
               
-              {/* Overlay Layer exactly matching final physical image */}
               <View style={StyleSheet.absoluteFillObject}>
                  <View style={{ flex: 1, padding: 10, justifyContent: 'space-between' }}>
-                    <View style={{ alignItems: 'center', paddingTop: 10 }}>
-                      {isFetchingGPS && (
-                         <View style={styles.gpsFetchingBadge}>
-                           <ActivityIndicator size="small" color="#FFF" style={{marginRight: 8}}/>
-                           <Text style={{color:'#FFF', fontWeight: 'bold'}}>Acquiring GPS...</Text>
-                         </View>
-                      )}
-                    </View>
-                    {/* Positioned inside 4:3 box exactly where it belongs */}
-                    <View style={{ paddingBottom: 10 }}>
-                      {liveGeoData && !isFetchingGPS && <GPSCameraOverlay geoData={liveGeoData} />}
+                    <View style={{ alignItems: 'center', paddingTop: 10 }} />
+                    
+                    {/* Placed inside 4:3 box exactly at the bottom matching reference */}
+                    <View style={{ paddingBottom: 5 }}>
+                      {liveGeoData && <GPSCameraOverlay geoData={liveGeoData} />}
                     </View>
                  </View>
               </View>
+
+              {flashMessage && (
+                 <View style={{ position: 'absolute', top: '40%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20, borderRadius: 12 }}>
+                    <Ionicons name="checkmark-circle" size={48} color="#10B981" style={{ alignSelf: 'center', marginBottom: 10 }} />
+                    <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 18 }}>{flashMessage}</Text>
+                 </View>
+              )}
             </View>
             
-            {/* The Controls Area in the Black Bottom Section */}
-            <View style={styles.cameraControlsContainer}>
+            {/* Controls Placed safely below the 4:3 frame in the black padding area */}
+            <View style={[styles.cameraControlsContainer, { position: 'absolute', bottom: 0, width: '100%' }]}>
                <TouchableOpacity onPress={closeLiveCamera} style={styles.cameraSideBtn}>
                  <Ionicons name="close" size={36} color="#FFF" />
                </TouchableOpacity>
                
-               {cameraMode === 'video' && isCameraRecording ? (
-                  <View style={{ alignItems: 'center' }}>
-                     <Text style={styles.camTimerText}>{formatTime(camRecordTime)}</Text>
-                     <TouchableOpacity onPress={captureLiveMedia} style={[styles.cameraCaptureBtnOuter, { borderColor: '#EF4444' }]}>
-                       <View style={[styles.cameraCaptureBtnInner, { backgroundColor: '#EF4444', borderRadius: 8, width: 30, height: 30 }]} />
-                     </TouchableOpacity>
-                  </View>
+               {cameraMode === 'video' ? (
+                  isCameraRecording ? (
+                    <View style={{ alignItems: 'center', flexDirection: 'row', gap: 15 }}>
+                       <Text style={styles.camTimerText}>{formatTime(camRecordTime)}</Text>
+                       <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraStopBtn}>
+                         <Ionicons name="square" size={24} color="#FFF" />
+                       </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraCaptureBtnOuter}>
+                      <View style={[styles.cameraCaptureBtnInner, { backgroundColor: '#EF4444' }]} />
+                    </TouchableOpacity>
+                  )
                ) : (
                  <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraCaptureBtnOuter}>
-                   <View style={[styles.cameraCaptureBtnInner, cameraMode === 'video' && { backgroundColor: '#EF4444' }]} />
+                   <View style={styles.cameraCaptureBtnInner} />
                  </TouchableOpacity>
                )}
                
@@ -711,20 +757,16 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
       </Modal>
 
       {/* --- PHYSICAL PHOTO WATERMARK STAMPING MODAL --- */}
-      <Modal visible={!!stampingPhoto} transparent>
-        <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center' }}>
+      <View style={{ position: 'absolute', left: -10000 }}>
+        {stampingPhoto && (
           <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
             <Image source={{ uri: stampingPhoto?.uri }} style={{ flex: 1, resizeMode: 'cover' }} />
-            <View style={{ position: 'absolute', bottom: 20, left: 10, right: 10 }}>
+            <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10 }}>
                <GPSCameraOverlay geoData={stampingPhoto?.geoData} />
             </View>
           </ViewShot>
-          <View style={{ position: 'absolute', bottom: 50, alignSelf: 'center' }}>
-            <ActivityIndicator size="large" color="#FFF" />
-            <Text style={{ color: '#FFF', marginTop: 10, fontWeight: 'bold' }}>Stamping Watermark...</Text>
-          </View>
-        </View>
-      </Modal>
+        )}
+      </View>
 
       {/* --- OTHER MODALS --- */}
       <Modal visible={showVisitModal} transparent animationType="fade">
@@ -796,7 +838,7 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
                         <Ionicons name="document-text" size={24} color="#2563EB" style={{marginRight: 15}} />
                         <View style={{ flex: 1 }}>
                           <Text style={styles.fileItemName} numberOfLines={1}>{item.name}</Text>
-                          <Text style={styles.fileItemFolder}>/{item.folder}</Text>
+                          <Text style={styles.fileItemFolder}>{item.folder === 'root' ? '/Location Pin' : `/${item.folder}`}</Text>
                         </View>
                         <Text style={styles.fileItemSize}>{formatBytes(item.size)}</Text>
                       </TouchableOpacity>
@@ -828,7 +870,7 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
                  <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
                     <Image source={{ uri: previewFile.uri }} style={{ width: '100%', height: '100%', resizeMode: 'contain' }} />
                     {previewFile.geoData && ( 
-                       <View style={{ position: 'absolute', bottom: 20, left: 10, right: 10 }}>
+                       <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10 }}>
                          <GPSCameraOverlay geoData={previewFile.geoData} />
                        </View>
                     )}
@@ -836,7 +878,7 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
                </View>
             )}
 
-            {previewFile?.type === 'video' && <VideoPreview uri={previewFile.uri} geoData={previewFile.geoData} />}
+            {previewFile?.type === 'video' && <VideoPreview uri={previewFile.uri} geoData={previewFile.geoData} SCREEN_WIDTH={SCREEN_WIDTH} CAMERA_HEIGHT={CAMERA_HEIGHT} />}
             {previewFile?.type === 'audio' && <AudioPreview uri={previewFile.uri} />}
           </View>
         </View>
@@ -845,14 +887,14 @@ export default function VisitManager({ projectId, tenderId, onEdit }: VisitManag
   );
 }
 
-const VideoPreview = ({ uri, geoData }: { uri: string, geoData?: any }) => {
+const VideoPreview = ({ uri, geoData, SCREEN_WIDTH, CAMERA_HEIGHT }: { uri: string, geoData?: any, SCREEN_WIDTH: number, CAMERA_HEIGHT: number }) => {
   const player = useVideoPlayer(uri, player => { player.play(); });
   return (
     <View style={styles.videoWrapper}>
       <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
          <VideoView player={player} style={{ flex: 1 }} fullscreenOptions={{ ios: { active: false }, android: { active: false } }} />
          {geoData && (
-            <View style={{ position: 'absolute', bottom: 20, left: 10, right: 10, pointerEvents: 'none' }}>
+            <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10, pointerEvents: 'none' }}>
               <GPSCameraOverlay geoData={geoData} />
             </View>
          )}
@@ -897,10 +939,9 @@ const AudioPreview = ({ uri }: { uri: string }) => {
   );
 };
 
-// Accurately replicates the GPS Map Camera UI: Map block detached, matching height, padded layout
+// Accurately replicates the GPS Map Camera UI: Map block detached, matching height, padded perfectly
 const GPSCameraOverlay = ({ geoData }: { geoData: any }) => {
   const isInvalid = geoData.lat === "0.000000";
-  // Add precise timestamp to force map reload dynamically
   const mapUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=15&size=150x150&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
   
   return (
@@ -992,16 +1033,16 @@ const styles = StyleSheet.create({
   audioProgressBarBg: { width: '100%', height: 6, backgroundColor: '#334155', borderRadius: 3 },
   audioProgressBarFill: { height: 6, backgroundColor: '#2563EB', borderRadius: 3 },
   
-  // Camera Controls Area completely outside the 4:3 frame bounds
   cameraControlsContainer: { height: 140, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 40, backgroundColor: '#000' },
   cameraSideBtn: { padding: 10, borderRadius: 30, width: 60, alignItems: 'center' },
   cameraCaptureBtnOuter: { width: 74, height: 74, borderRadius: 37, borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center' },
   cameraCaptureBtnInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFF' },
-  camTimerText: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  cameraStopBtn: { padding: 15, backgroundColor: 'rgba(239, 68, 68, 0.2)', borderRadius: 30, borderWidth: 2, borderColor: '#EF4444' },
+  camTimerText: { color: '#FFF', fontSize: 18, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
   
-  // GPS Overlay - Perfected Styling Matching Screenshot exactly
+  // GPS Overlay - Perfected Layout matching user screenshot exactly
   gpsFetchingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  gpsOverlayContainer: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, paddingBottom: 5 },
+  gpsOverlayContainer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 5, paddingBottom: 5 },
   gpsMapSquare: { width: 90, height: 90, backgroundColor: '#E2E8F0', borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#FFF', marginRight: 10, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3, zIndex: 2 },
   googleWatermark: { position: 'absolute', bottom: 4, left: 6, color: '#FFF', fontSize: 12, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
   gpsTextContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 12, minHeight: 90, justifyContent: 'center' },
