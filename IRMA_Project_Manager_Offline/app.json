@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "IRMA Project Manager Offline",
+    "name": "IRMA Project Manager",
     "slug": "IRMA_Project_Manager_Offline",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -38,7 +38,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/Logo_Deep_sah.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
@@ -57,7 +57,8 @@
             "minSdkVersion": 24
           }
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -4,6 +4,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
+import * as Linking from 'expo-linking';
 import { zip } from 'react-native-zip-archive';
 import { Ionicons } from '@expo/vector-icons';
 import VisitManager from '../../components/VisitManager';
@@ -19,18 +21,23 @@ const parseDateString = (dateStr: string) => {
   return new Date(dateStr).getTime() || 0;
 };
 
+const formatBytes = (bytes: number) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
 export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
   const db = SQLite.useSQLiteContext();
   
-  // CRITICAL FIX: Safe parameter extraction guaranteed by the updated Router pushes.
-  // Prevents the "undefined_undefined" fallback that caused all projects to share files.
   const projectId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
   const tenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
-  
   const sanitizedFolder = `${projectId}_${tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   
+  const [activeTab, setActiveTab] = useState<'details' | 'visits'>('details');
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
@@ -41,23 +48,29 @@ export default function ProjectDetails() {
   const [isScopeExpanded, setIsScopeExpanded] = useState(false);
   const [hasEdited, setHasEdited] = useState(false);
 
-  const [isZippingBackground, setIsZippingBackground] = useState(false);
+  const [exportState, setExportState] = useState<{ active: boolean, status: string, isCancellable: boolean }>({ active: false, status: '', isCancellable: false });
   const isExportingRef = useRef(false);
 
   const loadData = useCallback(() => {
-    if (!projectId || !tenderId) return;
+    if (!projectId) return;
     setLoading(true); setDbError(null);
     try {
-      const projData = db.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? AND tender_id = ?`, [projectId, tenderId]);
+      let projData;
+      if (tenderId && tenderId !== 'UNKNOWN_TENDER' && tenderId.trim() !== '') {
+        projData = db.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? AND tender_id = ? LIMIT 1`, [projectId, tenderId]);
+      }
+      if (!projData) {
+        projData = db.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? LIMIT 1`, [projectId]);
+      }
+
       if (!projData) { setProject(null); setLoading(false); return; }
       setProject(projData);
 
       const obsData = db.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
       if (obsData && obsData.length > 0) {
         const sortedObs = [...obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
-        const newestTimestamp = parseDateString(sortedObs[0].visit_date);
-        setLatestObs(sortedObs.filter((o: any) => parseDateString(o.visit_date) === newestTimestamp));
-        setPrevObs(sortedObs.filter((o: any) => parseDateString(o.visit_date) !== newestTimestamp));
+        setLatestObs([sortedObs[0]]);
+        setPrevObs(sortedObs.length > 1 ? sortedObs.slice(1) : []);
       }
       setLoading(false);
     } catch (error: any) {
@@ -67,28 +80,23 @@ export default function ProjectDetails() {
 
   useEffect(() => {
     let isMounted = true;
-    if (!projectId || !tenderId) return;
+    if (!projectId) return;
     const timeout = setTimeout(() => { if (isMounted) loadData(); }, 50);
     return () => { isMounted = false; clearTimeout(timeout); };
-  }, [loadData, projectId, tenderId]);
+  }, [loadData, projectId]);
 
   const handleBackNavigation = () => hasEdited ? router.replace('/(tabs)/dashboard') : router.back();
 
   const getDirectoryMetadata = async (folderPath: string) => {
-    let totalFiles = 0;
-    let totalSize = 0;
-    let maxModTime = 0;
-
+    let totalFiles = 0, totalSize = 0, maxModTime = 0;
     const traverse = async (currentPath: string) => {
       const files = await FileSystem.readDirectoryAsync(currentPath);
       for (const file of files) {
         const fullPath = `${currentPath}${file}`;
         const info = await FileSystem.getInfoAsync(fullPath);
-        if (info.isDirectory) {
-          await traverse(`${fullPath}/`);
-        } else {
-          totalFiles++;
-          totalSize += info.size || 0;
+        if (info.isDirectory) await traverse(`${fullPath}/`);
+        else {
+          totalFiles++; totalSize += info.size || 0;
           if (info.modificationTime && info.modificationTime > maxModTime) maxModTime = info.modificationTime;
         }
       }
@@ -100,44 +108,38 @@ export default function ProjectDetails() {
   const handleShareOptions = async () => {
     if (isExportingRef.current) return;
     const sourcePath = `${FileSystem.documentDirectory}projects/${sanitizedFolder}/`;
-    
     const dirInfo = await FileSystem.getInfoAsync(sourcePath);
     if (!dirInfo.exists) return Alert.alert("No Data", "No files exist to share.");
-
     const currentMeta = await getDirectoryMetadata(sourcePath);
     if (currentMeta.totalFiles === 0) return Alert.alert("Empty Directory", "No files exist to share.");
 
-    Alert.alert(
-      "Share Project Data",
-      "Choose how you want to share this project:",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Share as Link (Cloud)", onPress: () => handleCloudShare(sourcePath, currentMeta) },
-        { text: "Share as ZIP (Local)", onPress: () => handleLocalShare(sourcePath) }
-      ]
-    );
+    Alert.alert("Share Project Data", `Ready to export ${currentMeta.totalFiles} files (~${formatBytes(currentMeta.totalSize)})`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Share as Link (Cloud)", onPress: () => handleCloudShare(sourcePath, currentMeta) },
+      { text: "Share as ZIP (Local)", onPress: () => handleLocalShare(sourcePath) }
+    ]);
   };
 
   const handleCloudShare = async (sourcePath: string, currentMeta: any) => {
     try {
       isExportingRef.current = true;
-      setIsZippingBackground(true);
+      setExportState({ active: true, status: 'Preparing Cloud Sync...', isCancellable: false });
 
-      const { expectedUrl, startBackgroundUpload, isCached } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, currentMeta);
-
-      const msg = isCached 
-        ? `Project Data Export for ${projectId}:\n${expectedUrl}`
-        : `Project Data Export for ${projectId}:\n${expectedUrl}\n\nNote: The file is currently uploading. If the link does not work immediately, please wait a minute.`;
-
+      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, currentMeta, (status) => {
+         setExportState(prev => ({ ...prev, status }));
+      });
+      
+      const msg = `Project Data Export for ${projectId}:\n${expectedUrl}\n\nNote: The link might not be fully ready until the files are uploaded completely by the sender.`;
+      
+      setExportState({ active: true, status: 'Starting Upload...', isCancellable: true });
       await Share.share({ message: msg });
 
       startBackgroundUpload().finally(() => {
         isExportingRef.current = false;
-        setIsZippingBackground(false);
+        setExportState({ active: false, status: '', isCancellable: false });
       });
-
-    } catch (e: any) {
-      isExportingRef.current = false; setIsZippingBackground(false);
+    } catch (e) {
+      isExportingRef.current = false; setExportState({ active: false, status: '', isCancellable: false });
       Alert.alert("Export Error", "Failed to initialize cloud upload.");
     }
   };
@@ -145,27 +147,36 @@ export default function ProjectDetails() {
   const handleLocalShare = async (sourcePath: string) => {
     try {
       isExportingRef.current = true;
-      setIsZippingBackground(true);
+      setExportState({ active: true, status: 'Compressing directory...\nThis may take a while depending on the total size.', isCancellable: true });
       
-      const targetZipPath = `${FileSystem.cacheDirectory}local_${sanitizedFolder}.zip`;
-      
+      const targetZipPath = `${FileSystem.cacheDirectory}${sanitizedFolder}.zip`;
       let cleanSource = sourcePath.replace('file://', '');
       try { cleanSource = decodeURIComponent(cleanSource); } catch(e){}
       let cleanTarget = targetZipPath.replace('file://', '');
       
-      await zip(cleanSource, cleanTarget);
-      
-      setIsZippingBackground(false);
-      await Sharing.shareAsync(targetZipPath, { dialogTitle: `Share Project: ${projectId}` });
-      isExportingRef.current = false;
+      setTimeout(async () => {
+        try {
+          await zip(cleanSource, cleanTarget);
+          setExportState({ active: false, status: '', isCancellable: false });
+          await Sharing.shareAsync(targetZipPath, { dialogTitle: `Share Project: ${projectId}` });
+        } catch(e) {
+          Alert.alert("Zipping Failed", "Could not create local ZIP file.");
+        } finally {
+          isExportingRef.current = false;
+        }
+      }, 300);
     } catch (e) {
-      isExportingRef.current = false; setIsZippingBackground(false);
-      Alert.alert("Zipping Failed", "Could not create local ZIP file.");
+      isExportingRef.current = false; setExportState({ active: false, status: '', isCancellable: false });
     }
   };
 
+  const copyToClipboard = async (text: string, label: string) => {
+    if (!text) return;
+    await Clipboard.setStringAsync(text);
+    Alert.alert("Copied", `${label} details copied to clipboard.`);
+  };
+
   if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text></View>;
-  
   if (dbError || !project) return (
     <View style={styles.centerLoading}>
       <Ionicons name="warning" size={48} color="#EF4444" style={{ marginBottom: 10 }} />
@@ -176,7 +187,6 @@ export default function ProjectDetails() {
   );
 
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
-  const isLongScope = project.scope && project.scope.length > 120;
 
   return (
     <View style={styles.container}>
@@ -191,73 +201,159 @@ export default function ProjectDetails() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 15, paddingBottom: 60 }}>
-        
-        <View style={styles.card}>
-          <Text style={styles.projectTypeTag}>{project.project_type || 'N/A'}</Text>
-          <Text style={styles.projectTitle}>{project.project_title || 'Untitled Project'}</Text>
-          
-          <View style={styles.dataRow}>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>Tender ID</Text><Text style={styles.dataValue}>{project.tender_id || 'N/A'}</Text></View>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>Contract Awarded</Text><Text style={styles.dataValue}>{project.award_date || 'N/A'}</Text></View>
-          </View>
-          <View style={styles.dataRow}>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>Bidder Name</Text><Text style={styles.dataValue} numberOfLines={2}>{project.bidder_name || 'N/A'}</Text></View>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>CAPEX</Text><Text style={styles.dataValue}>₹{project.capex || '0'} Cr</Text></View>
-          </View>
-          <View style={styles.dataRow}>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>Physical Progress</Text><Text style={[styles.dataValue, { color: '#16A34A', fontWeight: 'bold' }]}>{project.physical_progress || '0'}%</Text></View>
-            <View style={styles.dataColumn}><Text style={styles.dataLabel}>Financial Progress</Text><Text style={[styles.dataValue, { color: '#2563EB', fontWeight: 'bold' }]}>{project.financial_progress || '0'}%</Text></View>
-          </View>
-          <View style={styles.scopeBox}>
-            <Text style={[styles.dataLabel, { textAlign: 'center', marginBottom: 6 }]}>Brief Scope of Work</Text>
-            <Text style={styles.scopeText} numberOfLines={isScopeExpanded ? undefined : 3}>{project.scope || 'No scope details available.'}</Text>
-            {isLongScope && (
-              <TouchableOpacity onPress={() => setIsScopeExpanded(!isScopeExpanded)} style={{ marginTop: 8 }}>
-                <Text style={{ color: '#2563EB', fontSize: 12, fontWeight: '700' }}>{isScopeExpanded ? 'View Less' : 'View More'}</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
+      <View style={styles.tabContainer}>
+         <TouchableOpacity onPress={() => setActiveTab('details')} style={[styles.tabBtn, activeTab === 'details' && styles.tabBtnActive]}>
+            <Ionicons name="document-text" size={16} color={activeTab === 'details' ? "#2563EB" : "#64748B"} style={{marginRight: 6}} />
+            <Text style={[styles.tabText, activeTab === 'details' && styles.tabTextActive]}>Project Info</Text>
+         </TouchableOpacity>
+         <TouchableOpacity onPress={() => setActiveTab('visits')} style={[styles.tabBtn, activeTab === 'visits' && styles.tabBtnActive]}>
+            <Ionicons name="location" size={16} color={activeTab === 'visits' ? "#2563EB" : "#64748B"} style={{marginRight: 6}} />
+            <Text style={[styles.tabText, activeTab === 'visits' && styles.tabTextActive]}>Field Visits</Text>
+         </TouchableOpacity>
+      </View>
 
-        <VisitManager projectId={projectId} tenderId={tenderId} folderName={sanitizedFolder} onEdit={() => setHasEdited(true)} />
-
-        <Text style={[styles.sectionTitle, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
-        {latestObs.length === 0 && prevObs.length === 0 ? (
-          <View style={styles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist for this project code.</Text></View>
-        ) : (
+      <ScrollView contentContainerStyle={{ padding: 15, paddingBottom: 20 }}>
+        {activeTab === 'details' && (
           <View>
-            {latestObs.length > 0 && (
-              <View style={{ marginBottom: 15 }}>
-                <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Most Recent ({latestObs[0].visit_date})</Text>
-                {latestObs.map((obs, idx) => <ObservationCard key={`latest_${idx}`} obs={obs} />)}
+            <View style={styles.card}>
+              <Text style={styles.projectTitle}>{project.project_title || 'Untitled Project'}</Text>
+              <Text style={styles.projectTypeTag}>{project.project_type || 'N/A'}</Text>
+              
+              <View style={styles.dataGrid}>
+                <DataCell label="Tender ID" value={project.tender_id} />
+                <DataCell label="No. of Tenders" value={project.no_of_tenders} />
+                <DataCell label="NIT Date" value={project.nit_date} />
+                <DataCell label="Award Date" value={project.award_date} />
+                <DataCell label="Sch. Completion" value={project.sch_completion_date} />
+                <DataCell label="Bidder Name" value={project.bidder_name} fullWidth />
+                
+                <DataCell label="Est. CAPEX" value={`₹${project.est_capex || '0'} Cr`} />
+                <DataCell label="Est. O&M" value={`₹${project.est_o_m || '0'} Cr`} />
+                <DataCell label="Awarded CAPEX" value={`₹${project.awarded_capex || project.capex || '0'} Cr`} color="#2563EB" />
+                <DataCell label="Awarded O&M" value={`₹${project.awarded_o_m || project.o_m || '0'} Cr`} color="#2563EB" />
+                
+                <DataCell label="Physical Progress" value={`${project.physical_progress || '0'}%`} color="#16A34A" />
+                <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
               </View>
-            )}
-            {prevObs.length > 0 && (
-              <View>
-                <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Previous Observations</Text>
-                {displayedPrevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
-                {prevObs.length > 5 && (
-                  <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={styles.viewMoreBtn}>
-                    <Text style={styles.viewMoreText}>{showAllObs ? 'View Less' : `View More Observations (${prevObs.length - 5})`}</Text>
-                    <Ionicons name={showAllObs ? "chevron-up" : "chevron-down"} size={14} color="#2563EB" style={{marginLeft: 4}}/>
+
+              <View style={styles.scopeBox}>
+                <Text style={[styles.dataLabel, { textAlign: 'center', marginBottom: 6 }]}>Brief Scope of Work</Text>
+                <Text style={styles.scopeText} numberOfLines={isScopeExpanded ? undefined : 3}>{project.scope || 'No scope details available.'}</Text>
+                {(project.scope && project.scope.length > 120) && (
+                  <TouchableOpacity onPress={() => setIsScopeExpanded(!isScopeExpanded)} style={{ marginTop: 8, alignSelf: 'center' }}>
+                    <Text style={{ color: '#2563EB', fontSize: 12, fontWeight: '700' }}>{isScopeExpanded ? 'View Less' : 'View More'}</Text>
                   </TouchableOpacity>
                 )}
+              </View>
+            </View>
+
+            <Text style={styles.sectionHeader}>Personnel Details</Text>
+            {/* Swapped order: State Officer first */}
+            <ContactCard title="State Officer" name={project.state_officer} designation="State Representative" phone={project.state_officer_contact} email={project.state_officer_email} onCopy={copyToClipboard} />
+            <ContactCard title="IRMA Personnel" name={project.irma_personnel} designation={project.designation} phone={project.contact_number} email={project.email} onCopy={copyToClipboard} />
+          </View>
+        )}
+
+        {activeTab === 'visits' && (
+          <View>
+            <VisitManager projectId={projectId} tenderId={tenderId} folderName={sanitizedFolder} onEdit={() => setHasEdited(true)} />
+
+            <Text style={[styles.sectionHeader, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
+            {latestObs.length === 0 && prevObs.length === 0 ? (
+              <View style={styles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist for this project code.</Text></View>
+            ) : (
+              <View>
+                {latestObs.length > 0 && (
+                  <View style={{ marginBottom: 15 }}>
+                    <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Most Recent ({latestObs[0].visit_date})</Text>
+                    {latestObs.map((obs, idx) => <ObservationCard key={`latest_${idx}`} obs={obs} />)}
+                  </View>
+                )}
+                {prevObs.length > 0 && (
+                  <View>
+                    <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Previous Observations</Text>
+                    {displayedPrevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
+                    
+                    {prevObs.length > 5 && (
+                      <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={[styles.viewMoreBtn, showAllObs && { marginTop: 8 }]}>
+                        <Text style={styles.viewMoreText}>{showAllObs ? 'Collapse Observations' : `View All Previous Observations (${prevObs.length})`}</Text>
+                        <Ionicons name={showAllObs ? "chevron-up" : "chevron-down"} size={14} color="#2563EB" style={{marginLeft: 4}}/>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
+                <View style={styles.endOfObservationsMarker}>
+                   <Text style={{ color: '#94A3B8', fontSize: 11, fontStyle: 'italic', letterSpacing: 2 }}>--------------- end of observations ---------------</Text>
+                </View>
               </View>
             )}
           </View>
         )}
       </ScrollView>
 
-      {isZippingBackground && (
-        <View style={styles.backgroundToast}>
-          <ActivityIndicator size="small" color="#FFF" style={{marginRight: 10}} />
-          <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 13}}>Processing Project Data...</Text>
+      {exportState.active && (
+        <View style={styles.progressOverlay}>
+          <View style={styles.progressBox}>
+            <ActivityIndicator size="large" color="#2563EB" />
+            <Text style={styles.progressText}>{exportState.status}</Text>
+          </View>
         </View>
       )}
     </View>
   );
 }
+
+const DataCell = ({ label, value, fullWidth, color }: any) => (
+  <View style={[styles.dataColumn, fullWidth && { width: '100%' }]}>
+    <Text style={styles.dataLabel}>{label}</Text>
+    <Text style={[styles.dataValue, color && { color, fontWeight: 'bold' }]}>{value || 'N/A'}</Text>
+  </View>
+);
+
+const ContactCard = ({ title, name, designation, phone, email, onCopy }: any) => {
+  if (!name && !phone && !email) return null;
+  const formattedPhone = phone ? (phone.startsWith('+') ? phone : `+91 ${phone}`) : '';
+
+  const handleCopy = () => {
+    onCopy(`${title}: ${name}\nPhone: ${formattedPhone}\nEmail: ${email}`, title);
+  };
+
+  return (
+    <View style={styles.contactCard}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
+         <Text style={styles.contactHeader}>{title}</Text>
+         <TouchableOpacity onPress={handleCopy} style={{ paddingHorizontal: 10, paddingVertical: 4, backgroundColor: '#EFF6FF', borderRadius: 8 }}>
+            <Text style={{color: '#2563EB', fontWeight: 'bold', fontSize: 11}}>Copy Contact</Text>
+         </TouchableOpacity>
+      </View>
+      <View style={styles.contactNameRow}>
+        <Ionicons name="person-circle" size={36} color="#475569" style={{marginRight: 10}} />
+        <View style={{flex: 1}}>
+           <Text style={styles.contactName}>{name || 'Unknown'}</Text>
+           <Text style={styles.contactDesig}>{designation || 'Personnel'}</Text>
+        </View>
+      </View>
+      
+      {email ? (
+        <View style={styles.contactRow}>
+          <Text style={styles.contactLabel}>Email:</Text>
+          <Text style={styles.contactValue} numberOfLines={1}>{email}</Text>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => Linking.openURL(`mailto:${email}`)}><Ionicons name="mail" size={16} color="#FFF" /></TouchableOpacity>
+        </View>
+      ) : null}
+
+      {phone ? (
+        <View style={styles.contactRow}>
+          <Text style={styles.contactLabel}>Contact:</Text>
+          <Text style={styles.contactValue}>{formattedPhone}</Text>
+          <TouchableOpacity style={[styles.iconBtn, {backgroundColor: '#10B981'}]} onPress={() => Linking.openURL(`tel:${formattedPhone}`)}><Ionicons name="call" size={16} color="#FFF" /></TouchableOpacity>
+          <TouchableOpacity style={[styles.iconBtn, {backgroundColor: '#25D366'}]} onPress={() => Linking.openURL(`whatsapp://send?phone=${formattedPhone.replace(/\D/g,'')}`)}><Ionicons name="logo-whatsapp" size={16} color="#FFF" /></TouchableOpacity>
+        </View>
+      ) : null}
+    </View>
+  );
+};
 
 const ObservationCard = ({ obs }: { obs: any }) => {
   const getSeverityColor = (sev: string) => {
@@ -280,26 +376,46 @@ const ObservationCard = ({ obs }: { obs: any }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F1F5F9' },
-  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F1F5F9' },
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' },
   errorText: { fontSize: 18, color: '#EF4444', fontWeight: 'bold' },
   goBackBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8, minWidth: 200, alignItems: 'center', marginTop: 10 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFF', paddingTop: 60, paddingBottom: 15, paddingHorizontal: 15, borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFF', paddingTop: 60, paddingBottom: 15, paddingHorizontal: 15 },
   backBtn: { padding: 5 },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: '#1E293B' },
-  headerSub: { fontSize: 12, color: '#64748B', fontWeight: '500', marginTop: 2 },
+  headerTitle: { fontSize: 18, fontWeight: '900', color: '#1E293B' },
+  headerSub: { fontSize: 12, color: '#64748B', fontWeight: '600', marginTop: 2 },
+  
+  tabContainer: { flexDirection: 'row', backgroundColor: '#FFF', borderBottomWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 15 },
+  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, borderBottomWidth: 3, borderColor: 'transparent' },
+  tabBtnActive: { borderColor: '#2563EB' },
+  tabText: { fontSize: 14, fontWeight: '700', color: '#64748B' },
+  tabTextActive: { color: '#2563EB' },
+
+  sectionHeader: { fontSize: 16, fontWeight: '900', color: '#0F172A', marginBottom: 12, marginTop: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
+  sectionHeaderRow: { marginBottom: 5 },
+  
   card: { backgroundColor: '#FFF', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   projectTypeTag: { fontSize: 12, color: '#2563EB', marginBottom: 6, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'center' },
   projectTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', marginBottom: 15, lineHeight: 24, textAlign: 'center' },
-  dataRow: { flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderColor: '#F1F5F9', paddingBottom: 12, marginBottom: 12 },
-  dataColumn: { flex: 1, paddingRight: 10 },
-  dataLabel: { fontSize: 11, color: '#64748B', fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-  dataValue: { fontSize: 14, color: '#334155', fontWeight: '600' },
-  scopeBox: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 8, marginTop: 5, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center' },
+  dataGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  dataColumn: { width: '48%', marginBottom: 15 },
+  dataLabel: { fontSize: 10, color: '#64748B', fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+  dataValue: { fontSize: 13, color: '#334155', fontWeight: '600' },
+  scopeBox: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 8, marginTop: 5, borderWidth: 1, borderColor: '#E2E8F0' },
   scopeText: { fontSize: 13, color: '#475569', lineHeight: 22, textAlign: 'justify' },
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  
+  contactCard: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0' },
+  contactHeader: { fontSize: 11, fontWeight: '800', color: '#64748B', textTransform: 'uppercase', letterSpacing: 1, marginTop: 4 },
+  contactNameRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, paddingBottom: 12, borderBottomWidth: 1, borderColor: '#F1F5F9' },
+  contactName: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
+  contactDesig: { fontSize: 12, color: '#64748B', fontWeight: '500' },
+  contactRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  contactLabel: { fontSize: 13, fontWeight: 'bold', color: '#475569', width: 60 },
+  contactValue: { flex: 1, fontSize: 13, color: '#1E293B', fontWeight: '600' },
+  iconBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  
   subSectionTitle: { fontSize: 13, fontWeight: '700', color: '#64748B', marginBottom: 10, marginTop: 5, textTransform: 'uppercase' },
-  viewMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, marginTop: 5, backgroundColor: '#EFF6FF', borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
+  viewMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, marginTop: -5, marginBottom: 5, backgroundColor: '#EFF6FF', borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
   viewMoreText: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },
   obsCard: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', borderLeftWidth: 5, borderLeftColor: '#334155' },
   obsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
@@ -307,5 +423,10 @@ const styles = StyleSheet.create({
   obsSeverity: { fontSize: 11, fontWeight: '800', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   obsCategory: { fontSize: 13, fontWeight: '700', color: '#1E293B', marginBottom: 6 },
   obsText: { fontSize: 14, color: '#475569', lineHeight: 22 },
-  backgroundToast: { position: 'absolute', bottom: 30, alignSelf: 'center', backgroundColor: '#334155', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 30, elevation: 5 }
+  endOfObservationsMarker: { paddingVertical: 10, marginBottom: 10, alignItems: 'center' },
+
+  progressOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', zIndex: 100 },
+  progressBox: { backgroundColor: '#FFF', padding: 25, borderRadius: 16, width: '85%', alignItems: 'center', elevation: 5 },
+  progressText: { fontSize: 16, fontWeight: 'bold', color: '#1E293B', marginTop: 15, textAlign: 'center', lineHeight: 24 },
+  progressActionBtn: { padding: 10, borderRadius: 8, flex: 1, alignItems: 'center' }
 });

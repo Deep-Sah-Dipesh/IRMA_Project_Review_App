@@ -10,8 +10,7 @@ import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
@@ -34,6 +33,7 @@ export default function DashboardTab() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isProcessingAction, setIsProcessingAction] = useState(false);
+  const [bulkExportStatus, setBulkExportStatus] = useState('');
 
   const sortOptions = ['Date', 'Project ID', 'Tender ID'];
 
@@ -46,11 +46,8 @@ export default function DashboardTab() {
   );
 
   const getFolderDatesAndSize = async (folderName: string) => {
-    let totalSize = 0;
-    let totalFiles = 0;
-    let maxModTime = 0;
+    let totalSize = 0, totalFiles = 0, maxModTime = 0;
     const dates: string[] = [];
-
     const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
     
     const traverse = async (currentPath: string) => {
@@ -68,8 +65,7 @@ export default function DashboardTab() {
           }
           await traverse(`${fullPath}/`);
         } else {
-          totalSize += info.size || 0;
-          totalFiles++;
+          totalSize += info.size || 0; totalFiles++;
           if (info.modificationTime && info.modificationTime > maxModTime) maxModTime = info.modificationTime;
         }
       }
@@ -85,17 +81,10 @@ export default function DashboardTab() {
     try {
       const baseUri = `${FileSystem.documentDirectory}projects/`;
       const dirInfo = await FileSystem.getInfoAsync(baseUri);
-      
-      if (!dirInfo.exists) {
-        if (isMounted) { setRecentProjects([]); setLoading(false); }
-        return;
-      }
+      if (!dirInfo.exists) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
 
       const activeFolders = await FileSystem.readDirectoryAsync(baseUri);
-      if (activeFolders.length === 0) {
-        if (isMounted) { setRecentProjects([]); setLoading(false); }
-        return;
-      }
+      if (activeFolders.length === 0) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
 
       const allTenders = await db.getAllAsync("SELECT * FROM tenders") as any[];
       const activeTenders = [];
@@ -106,23 +95,15 @@ export default function DashboardTab() {
             const meta = await getFolderDatesAndSize(expectedFolder);
             if (meta.uniqueDates.length > 0 && meta.totalFiles > 0) {
                activeTenders.push({ 
-                 ...t, 
-                 folderName: expectedFolder, 
-                 visitDates: meta.uniqueDates, 
-                 latestDate: meta.uniqueDates[0],
-                 totalSize: meta.totalSize,
-                 totalFiles: meta.totalFiles,
-                 maxModTime: meta.maxModTime
+                 ...t, folderName: expectedFolder, visitDates: meta.uniqueDates, 
+                 latestDate: meta.uniqueDates[0], totalSize: meta.totalSize,
+                 totalFiles: meta.totalFiles, maxModTime: meta.maxModTime
                });
             }
          }
       }
 
-      if (isMounted) {
-         setRecentProjects(activeTenders);
-         setSelectedIds(new Set());
-         setIsSelectionMode(false);
-      }
+      if (isMounted) { setRecentProjects(activeTenders); setSelectedIds(new Set()); setIsSelectionMode(false); }
     } catch (e) {
       console.error(e);
     } finally {
@@ -134,16 +115,12 @@ export default function DashboardTab() {
     let filtered = recentProjects.filter(p => {
       if (!search) return true;
       const q = search.toLowerCase();
-      return (p.project_title || '').toLowerCase().includes(q) || 
-             (p.project_id || '').toLowerCase().includes(q) || 
-             (p.ulb || '').toLowerCase().includes(q);
+      return (p.project_title || '').toLowerCase().includes(q) || (p.project_id || '').toLowerCase().includes(q) || (p.ulb || '').toLowerCase().includes(q);
     });
 
     if (sortBy === 'Project ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.project_id.localeCompare(b.project_id) : b.project_id.localeCompare(a.project_id));
     else if (sortBy === 'Tender ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.tender_id.localeCompare(b.tender_id) : b.tender_id.localeCompare(a.tender_id));
-    else {
-      filtered.sort((a, b) => sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate));
-    }
+    else filtered.sort((a, b) => sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate));
 
     if (sortBy === 'Date') {
       const grouped = [];
@@ -157,9 +134,12 @@ export default function DashboardTab() {
       });
       return grouped;
     }
-
     return filtered.map(p => ({ ...p, isHeader: false, id: p.folderName }));
   }, [recentProjects, search, sortBy, sortOrder]);
+
+  const totalSelectedBytes = useMemo(() => {
+    return recentProjects.filter(p => selectedIds.has(p.folderName)).reduce((acc, curr) => acc + curr.totalSize, 0);
+  }, [selectedIds, recentProjects]);
 
   const toggleSelection = (folderName: string) => {
     const newSet = new Set(selectedIds);
@@ -177,19 +157,14 @@ export default function DashboardTab() {
   const toggleDateSelection = (date: string) => {
     const projectsForDate = recentProjects.filter(p => p.latestDate === date);
     const newSet = new Set(selectedIds);
-    
-    if (isDateFullySelected(date)) {
-      projectsForDate.forEach(p => newSet.delete(p.folderName));
-    } else {
-      projectsForDate.forEach(p => newSet.add(p.folderName));
-    }
+    if (isDateFullySelected(date)) projectsForDate.forEach(p => newSet.delete(p.folderName));
+    else projectsForDate.forEach(p => newSet.add(p.folderName));
     setSelectedIds(newSet);
   };
 
   const handleSelectModal = (selection: string) => {
     if (selection === 'Date' || selection === 'Project ID' || selection === 'Tender ID') {
-      setSortBy(selection as any);
-      setSortOrder('asc');
+      setSortBy(selection as any); setSortOrder('asc');
     }
     setActiveModal(null);
   };
@@ -203,9 +178,7 @@ export default function DashboardTab() {
             for (const folder of Array.from(selectedIds)) {
                await FileSystem.deleteAsync(`${FileSystem.documentDirectory}projects/${folder}/`, { idempotent: true });
             }
-            setSelectedIds(new Set());
-            setIsSelectionMode(false);
-            loadRecentProjects(true);
+            setSelectedIds(new Set()); setIsSelectionMode(false); loadRecentProjects(true);
           } catch(e) { Alert.alert("Error", "Could not delete all files."); }
           setIsProcessingAction(false);
       }}
@@ -233,50 +206,55 @@ export default function DashboardTab() {
   };
 
   const executeBulkShare = async (type: 'link' | 'local', exportName: string, totalSize: number, totalFiles: number) => {
-    setIsProcessingAction(true);
+    setIsProcessingAction(true); setBulkExportStatus('Preparing files...');
     const stagingPath = `${FileSystem.cacheDirectory}staging_${exportName}/`;
     
     try {
       await FileSystem.makeDirectoryAsync(stagingPath, { intermediates: true });
-
       for (const folder of Array.from(selectedIds)) {
-        await FileSystem.copyAsync({ 
-          from: `${FileSystem.documentDirectory}projects/${folder}/`, 
-          to: `${stagingPath}${folder}/` 
-        });
+        await FileSystem.copyAsync({ from: `${FileSystem.documentDirectory}projects/${folder}/`, to: `${stagingPath}${folder}/` });
       }
 
       if (type === 'link') {
         const currentMeta = { totalFiles, totalSize, maxModTime: Date.now() };
-        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, currentMeta);
+        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, currentMeta, (status) => {
+           setBulkExportStatus(status);
+        });
         
-        await Share.share({ message: `Multi-Project Export (${selectedIds.size} Projects):\n${expectedUrl}\n\nNote: The file is currently uploading. If the link does not work immediately, please wait.` });
+        // Note safely restored
+        await Share.share({ message: `Multi-Project Export (${selectedIds.size} Projects):\n${expectedUrl}\n\nNote: The link might not be fully ready until the files are uploaded completely by the sender.` });
         
         startBackgroundUpload().finally(async () => {
           await FileSystem.deleteAsync(stagingPath, { idempotent: true });
-          setIsProcessingAction(false);
+          setIsProcessingAction(false); setBulkExportStatus('');
         });
       } else {
+        setBulkExportStatus('Compressing directory...\nThis may take a while depending on the total size.');
         const targetZip = `${FileSystem.cacheDirectory}${exportName}.zip`;
-        await zip(stagingPath, targetZip);
-        await Sharing.shareAsync(targetZip);
-        await FileSystem.deleteAsync(stagingPath, { idempotent: true });
-        setIsProcessingAction(false);
+        setTimeout(async () => {
+          try {
+            await zip(stagingPath, targetZip);
+            await Sharing.shareAsync(targetZip);
+          } finally {
+            await FileSystem.deleteAsync(stagingPath, { idempotent: true });
+            setIsProcessingAction(false); setBulkExportStatus('');
+          }
+        }, 300);
       }
     } catch (e) {
-      await FileSystem.deleteAsync(stagingPath, { idempotent: true });
-      Alert.alert("Zipping Failed", "Failed to package multiple projects.");
-      setIsProcessingAction(false);
+      await FileSystem.deleteAsync(stagingPath, { idempotent: true }).catch(() => {});
+      Alert.alert("Export Failed", "Failed to package multiple projects.");
+      setIsProcessingAction(false); setBulkExportStatus('');
     }
   };
-
-  const totalSelectedBytes = useMemo(() => {
-    return recentProjects.filter(p => selectedIds.has(p.folderName)).reduce((acc, curr) => acc + curr.totalSize, 0);
-  }, [selectedIds, recentProjects]);
 
   const renderItem = ({ item }: { item: any }) => {
     if (item.isHeader) {
        const [yyyy, mm, dd] = item.date.split('-');
+       const dObj = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
+       const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+       const dayStr = days[dObj.getDay()];
+
        return (
          <View style={styles.dateHeaderContainer}>
            {isSelectionMode && (
@@ -284,9 +262,7 @@ export default function DashboardTab() {
                <Ionicons name={isDateFullySelected(item.date) ? "checkbox" : "square-outline"} size={22} color={isDateFullySelected(item.date) ? "#2563EB" : "#94A3B8"} />
              </TouchableOpacity>
            )}
-           <View style={styles.dateHeader}>
-             <Text style={styles.dateHeaderText}>{dd}-{mm}-{yyyy}</Text>
-           </View>
+           <View style={styles.dateHeader}><Text style={styles.dateHeaderText}>{dayStr}, {dd}-{mm}-{yyyy}</Text></View>
          </View>
        );
     }
@@ -300,63 +276,71 @@ export default function DashboardTab() {
         onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.folderName); }}
         onPress={() => {
           if (isSelectionMode) toggleSelection(item.folderName);
-          else {
-            // CRITICAL FIX: Safe routing prevents "undefined" ghost folders
-            router.push({
-              pathname: '/project/[id]',
-              params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' }
-            });
-          }
+          else router.push({ pathname: '/project/[id]', params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' } });
         }}
       >
         <View style={styles.cardHeader}>
-          {isSelectionMode && (
-            <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={22} color={isSelected ? "#2563EB" : "#94A3B8"} style={{marginRight: 10}} />
-          )}
+          {isSelectionMode && <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={22} color={isSelected ? "#2563EB" : "#94A3B8"} style={{marginRight: 10}} />}
           <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
             <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
             <Text style={styles.cardId}>{item.project_id}</Text>
           </View>
         </View>
-        
         <Text style={styles.cardTitle}>{item.project_title}</Text>
         <View style={styles.cardMetaRow}>
           <Ionicons name="location-outline" size={14} color="#64748B" />
           <Text style={styles.cardMeta}>{item.ulb}, {item.state}</Text>
         </View>
-        
         <View style={styles.dovContainer}>
           <Ionicons name="calendar" size={12} color="#059669" style={{marginRight: 4}} />
-          <Text style={styles.dovText}>
-            DOV: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}
-          </Text>
+          <Text style={styles.dovText}>DOV: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}</Text>
         </View>
       </TouchableOpacity>
     );
   };
 
-  if (loading) {
-    return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Scanning local workspace...</Text></View>;
-  }
+  if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Scanning local workspace...</Text></View>;
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
+        {/* ROW 1: Titles & Select Button aligned to Top Right */}
         <View style={styles.headerRow}>
           <View style={{ flex: 1, paddingRight: 10 }}>
             <Text style={styles.title}>Dashboard</Text>
             <Text style={styles.subTitle}>Recently visited/reported projects</Text>
           </View>
+          <TouchableOpacity 
+             style={[styles.toolbarBtn, isSelectionMode ? { backgroundColor: '#FEE2E2', borderColor: '#FECACA' } : { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
+             onPress={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
+          >
+             <Ionicons name={isSelectionMode ? "close" : "checkbox-outline"} size={16} color={isSelectionMode ? "#EF4444" : "#2563EB"} />
+             <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select Projects'}</Text>
+          </TouchableOpacity>
         </View>
 
-        {!isSearchActive ? (
-          <View style={styles.toolbarRow}>
-            <TouchableOpacity onPress={() => setIsSearchActive(true)} style={styles.toolbarBtn}>
-              <Ionicons name="search" size={16} color="#1E293B" />
-              <Text style={styles.toolbarBtnText}>Search</Text>
+        {/* ROW 2: Dynamic Search & Sort */}
+        <View style={styles.searchSortRow}>
+          {isSearchActive ? (
+            <View style={styles.activeSearchContainer}>
+              <Ionicons name="search" size={18} color="#64748B" style={{ marginLeft: 10 }} />
+              <TextInput placeholder="Search ID, Title..." style={styles.searchInput} value={search} onChangeText={setSearch} autoFocus />
+              {search.length > 0 && (
+                <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 5 }}><Ionicons name="close-circle" size={18} color="#94A3B8" /></TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => { setIsSearchActive(false); setSearch(''); Keyboard.dismiss(); }} style={{ paddingHorizontal: 10 }}>
+                <Text style={{ color: '#EF4444', fontWeight: 'bold' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity onPress={() => setIsSearchActive(true)} style={[styles.toolbarBtn, { flex: 1, justifyContent: 'flex-start' }]}>
+              <Ionicons name="search" size={16} color="#64748B" />
+              <Text style={[styles.toolbarBtnText, { color: '#64748B' }]}>Search Projects...</Text>
             </TouchableOpacity>
-            
-            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, justifyContent: 'center' }}>
+          )}
+
+          {!isSearchActive && (
+            <View style={styles.sortGroup}>
               <TouchableOpacity style={[styles.toolbarBtn, { borderTopRightRadius: 0, borderBottomRightRadius: 0, marginRight: 0 }]} onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}>
                 <Ionicons name="swap-vertical" size={16} color="#475569" />
                 <Text style={styles.toolbarBtnText}>{sortBy}</Text>
@@ -365,35 +349,8 @@ export default function DashboardTab() {
                 <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2563EB" />
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity 
-              style={[styles.toolbarBtn, isSelectionMode ? { backgroundColor: '#FEE2E2', borderColor: '#FECACA' } : { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
-              onPress={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
-            >
-              <Ionicons name={isSelectionMode ? "close" : "checkbox-outline"} size={16} color={isSelectionMode ? "#EF4444" : "#2563EB"} />
-              <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select'}</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.activeSearchBar}>
-            <Ionicons name="search" size={20} color="#64748B" />
-            <TextInput 
-              placeholder="Search ID, Title, ULB..." 
-              style={styles.input}
-              value={search}
-              onChangeText={setSearch}
-              autoFocus
-            />
-            {search.length > 0 && (
-              <TouchableOpacity onPress={() => setSearch('')} style={{ padding: 5 }}>
-                <Ionicons name="close-circle" size={20} color="#94A3B8" />
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={() => { setIsSearchActive(false); setSearch(''); Keyboard.dismiss(); }} style={{ paddingLeft: 10 }}>
-              <Text style={{ color: '#EF4444', fontWeight: 'bold' }}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+          )}
+        </View>
       </View>
 
       <FlatList 
@@ -440,7 +397,7 @@ export default function DashboardTab() {
       {isProcessingAction && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#FFF" />
-          <Text style={{color: '#FFF', marginTop: 15, fontWeight: 'bold'}}>Processing Folders...</Text>
+          <Text style={{color: '#FFF', marginTop: 15, fontWeight: 'bold', textAlign: 'center', paddingHorizontal: 20, lineHeight: 24}}>{bulkExportStatus || 'Processing Folders...'}</Text>
         </View>
       )}
 
@@ -451,27 +408,18 @@ export default function DashboardTab() {
               <View style={styles.modalContent}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>{activeModal?.title}</Text>
-                  <TouchableOpacity onPress={() => setActiveModal(null)}>
-                    <Ionicons name="close" size={24} color="#64748B" />
-                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setActiveModal(null)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
                 </View>
-                <FlatList
-                  data={activeModal?.options}
-                  keyExtractor={(item, idx) => `${item}_${idx}`}
-                  renderItem={({ item }) => (
+                <FlatList data={activeModal?.options} keyExtractor={(item, idx) => `${item}_${idx}`} renderItem={({ item }) => (
                     <TouchableOpacity style={styles.modalItem} onPress={() => handleSelectModal(item)}>
-                      <Text style={[styles.modalItemText, sortBy === item && { color: '#2563EB', fontWeight: 'bold' }]}>
-                        {item}
-                      </Text>
+                      <Text style={[styles.modalItemText, sortBy === item && { color: '#2563EB', fontWeight: 'bold' }]}>{item}</Text>
                     </TouchableOpacity>
-                  )}
-                />
+                )} />
               </View>
             </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
       </Modal>
-
     </View>
   );
 }
@@ -480,16 +428,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
   centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF', borderBottomWidth: 1, borderColor: '#E2E8F0' },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
   subTitle: { fontSize: 12, color: '#64748B', fontWeight: '600', marginTop: 2 },
   
-  toolbarRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15, gap: 8 },
-  toolbarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  searchSortRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15, gap: 10 },
+  sortGroup: { flexDirection: 'row', alignItems: 'center' },
+  
+  toolbarBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
   toolbarBtnText: { fontSize: 13, color: '#475569', marginLeft: 6, fontWeight: '700' },
   
-  activeSearchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, marginTop: 15 },
-  input: { marginLeft: 10, flex: 1, fontSize: 16 },
+  activeSearchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  searchInput: { flex: 1, paddingVertical: 8, paddingHorizontal: 10, fontSize: 14 },
   
   dateHeaderContainer: { flexDirection: 'row', alignItems: 'center', marginVertical: 15 },
   dateHeader: { alignItems: 'center' },

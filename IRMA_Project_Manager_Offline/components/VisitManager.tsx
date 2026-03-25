@@ -1,181 +1,152 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, Platform, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Modal, TouchableWithoutFeedback, FlatList, TextInput, Image, ScrollView, Platform, useWindowDimensions, KeyboardAvoidingView, ActivityIndicator } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as Location from 'expo-location';
-import * as IntentLauncher from 'expo-intent-launcher';
 import * as Linking from 'expo-linking';
-import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useAudioPlayer } from 'expo-audio';
 import { Audio } from 'expo-av';
 import ViewShot from 'react-native-view-shot';
 
-interface VisitManagerProps {
-  projectId: string;
-  tenderId: string;
-  folderName: string; // UNIFIED PATH: Received directly from [id].tsx
-  onEdit?: () => void;
-}
+// PASTE YOUR API KEY HERE TO REMOVE WATERMARK
+const GOOGLE_MAPS_API_KEY = "AIzaSyBJ_t7XtFa0vKHr9iDXFX8fcHvk9OGC_ec"; 
+
+interface VisitManagerProps { projectId: string; tenderId: string; folderName: string; onEdit?: () => void; }
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-const get12HourTime = (d: Date) => {
+const formatTime = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+
+const formatGeoDate = (d: Date) => {
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const pad = (n: number) => n.toString().padStart(2, '0');
-  const hours = d.getHours();
-  const h12 = hours % 12 || 12;
-  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const h12 = d.getHours() % 12 || 12;
+  const ampm = d.getHours() >= 12 ? 'PM' : 'AM';
   const offset = -d.getTimezoneOffset();
   const sign = offset >= 0 ? '+' : '-';
   const offH = pad(Math.floor(Math.abs(offset) / 60));
   const offM = pad(Math.abs(offset) % 60);
-  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  return `${dayNames[d.getDay()]}, ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(h12)}:${pad(d.getMinutes())} ${ampm} GMT ${sign}${offH}:${offM}`;
+  return `${days[d.getDay()]}, ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}, ${pad(h12)}:${pad(d.getMinutes())} ${ampm} GMT${sign}${offH}:${offM}`;
 };
 
 export default function VisitManager({ projectId, tenderId, folderName, onEdit }: VisitManagerProps) {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
-  const CAMERA_HEIGHT = SCREEN_WIDTH * (4 / 3);
 
   const [visits, setVisits] = useState<string[]>([]);
   const [activeVisit, setActiveVisit] = useState<string | null>(null);
   const [showVisitModal, setShowVisitModal] = useState(false);
-
   const [fileStats, setFileStats] = useState<Record<string, number>>({ total: 0 });
   const [showFilesModal, setShowFilesModal] = useState(false);
-  const [savedFiles, setSavedFiles] = useState<{name: string, folder: string, time: number, size: number}[]>([]);
-  const [totalSessionSize, setTotalSessionSize] = useState(0); // For header display
-  
+  const [savedFiles, setSavedFiles] = useState<any[]>([]);
+  const [totalSessionSize, setTotalSessionSize] = useState(0);
   const [filterType, setFilterType] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'Date' | 'Name'>('Date');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [previewFile, setPreviewFile] = useState<any | null>(null);
 
-  const [previewFile, setPreviewFile] = useState<{uri: string, name: string, type: string, content?: string, geoData?: any} | null>(null);
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [commentText, setCommentText] = useState('');
+  const commentInputRef = useRef<TextInput>(null);
   
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordTime, setRecordTime] = useState(0);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
 
   const [camPerm, reqCamPerm] = useCameraPermissions();
-  const [micPerm, reqMicPerm] = useMicrophonePermissions();
   const [showLiveCamera, setShowLiveCamera] = useState(false);
-  const [cameraMode, setCameraMode] = useState<'picture' | 'video'>('picture');
   const [cameraFacing, setCameraFacing] = useState<'back' | 'front'>('back');
-  const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
+  const [flashMode, setFlashMode] = useState<'off' | 'on' | 'auto'>('auto');
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '4:3'>('16:9');
   
+  const [showZoom, setShowZoom] = useState(false);
+  const [zoom, setZoom] = useState(0);
+  const [isCapturing, setIsCapturing] = useState(false);
+  
+  const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
   const sessionGeoDataRef = useRef<any>(null);
   const [liveGeoData, setLiveGeoData] = useState<any>(null);
   
-  const [isCameraRecording, setIsCameraRecording] = useState(false);
-  const [camRecordTime, setCamRecordTime] = useState(0);
-  const [isCameraPaused, setIsCameraPaused] = useState(false);
-
-  const [stampingPhoto, setStampingPhoto] = useState<{ uri: string, geoData: any } | null>(null);
-  const [flashMessage, setFlashMessage] = useState<string | null>(null);
+  // BACKGROUND RENDERING ENGINE
+  const [captureQueue, setCaptureQueue] = useState<any[]>([]);
+  const [captureTrigger, setCaptureTrigger] = useState(0);
   const viewShotRef = useRef<ViewShot>(null);
 
-  // Uses unified folderName to prevent Dashboard missing active visits
   const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${folderName}/`;
+  
+  // DYNAMIC CAMERA RESOLUTIONS
+  const CAMERA_HEIGHT = aspectRatio === '4:3' ? SCREEN_WIDTH * (4 / 3) : SCREEN_WIDTH * (16 / 9);
+  const HIDDEN_WIDTH = 1080;
+  const HIDDEN_HEIGHT = aspectRatio === '4:3' ? 1440 : 1920;
 
   useEffect(() => { scanExistingVisits(); }, [folderName]);
   useEffect(() => { if (activeVisit) updateFileStats(); }, [activeVisit]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (recording && !isRecordingPaused) interval = setInterval(() => setRecordTime(t => t + 1), 1000);
+    if (recording && !isRecordingPaused) {
+      interval = setInterval(async () => {
+        try {
+          const status = await recording.getStatusAsync();
+          if (status.isRecording) setRecordTime(Math.floor(status.durationMillis / 1000));
+        } catch(e) {}
+      }, 500);
+    }
     return () => clearInterval(interval);
   }, [recording, isRecordingPaused]);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isCameraRecording && !isCameraPaused) interval = setInterval(() => setCamRecordTime(t => t + 1), 1000);
-    else if (!isCameraRecording) setCamRecordTime(0);
-    return () => clearInterval(interval);
-  }, [isCameraRecording, isCameraPaused]);
-
-  useEffect(() => {
-    return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); };
-  }, [recording]);
+  useEffect(() => { return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); }; }, [recording]);
 
   useEffect(() => {
     let sub: Location.LocationSubscription;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        sub = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 10000, distanceInterval: 10 }, 
+        sub = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, timeInterval: 2000, distanceInterval: 1 }, 
         async (loc) => {
           try {
             const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-            const addressObj = geocode[0] || {};
-            const newData = {
-              lat: loc.coords.latitude.toFixed(6), 
-              lon: loc.coords.longitude.toFixed(6), 
-              timestamp: get12HourTime(new Date(loc.timestamp)),
-              address: `${addressObj.street || ''} ${addressObj.district || ''}, ${addressObj.city || ''} ${addressObj.postalCode || ''}`.trim() || 'Unknown Street',
-              city: addressObj.city || addressObj.subregion || 'Unknown City',
-              region: addressObj.region || 'Unknown Region',
-              country: addressObj.country || 'India'
-            };
+            const addr = geocode[0] || {};
+            const newData = { lat: loc.coords.latitude.toFixed(6), lon: loc.coords.longitude.toFixed(6), timestamp: formatGeoDate(new Date(loc.timestamp)), address: `${addr.street || ''} ${addr.district || ''}, ${addr.city || ''} ${addr.postalCode || ''}`.trim() || 'Unknown Street', city: addr.city || addr.subregion || 'Unknown City', region: addr.region || 'Unknown Region', country: addr.country || 'India' };
             sessionGeoDataRef.current = newData;
             setLiveGeoData(newData);
-          } catch (e) {
-            const fallback = {
-              lat: loc.coords.latitude.toFixed(6), lon: loc.coords.longitude.toFixed(6), 
-              timestamp: get12HourTime(new Date(loc.timestamp)),
-              address: "Coordinates locked", city: "Local", region: "Cached", country: "India"
-            };
-            sessionGeoDataRef.current = fallback;
-            setLiveGeoData(fallback);
-          }
+          } catch (e) {}
         });
       }
     })();
     return () => { if (sub) sub.remove(); }
   }, []);
 
+  // Guarantee image load before snapping ViewShot
   useEffect(() => {
-    if (stampingPhoto && viewShotRef.current) {
+    if (captureTrigger > 0 && captureQueue.length > 0 && viewShotRef.current) {
       setTimeout(async () => {
         try {
           const stampedUri = await viewShotRef.current?.capture?.();
           if (stampedUri) {
              const targetDir = await ensureSubfolder('geotagged_captures');
-             await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}img_geo_${getFormattedDateTime()}.jpg` });
+             const d = new Date(captureQueue[0].id);
+             const p = (n: number) => n.toString().padStart(2, '0');
+             const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+             await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}img_geo_${dtStr}.jpg` });
              updateFileStats();
-             setFlashMessage("Photo Saved!");
-             setTimeout(() => setFlashMessage(null), 2000);
           }
-        } catch (e) {
-          console.error("Watermark Error", e);
-        } finally {
-          setStampingPhoto(null);
+        } catch (e) {} finally {
+          setCaptureQueue(q => q.slice(1));
+          setCaptureTrigger(0);
         }
-      }, 300); 
+      }, 100); 
     }
-  }, [stampingPhoto]);
-
-  const getFormattedDateTime = () => {
-    const d = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  };
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const s = (seconds % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  };
+  }, [captureTrigger, captureQueue]);
 
   const scanExistingVisits = async () => {
     try {
@@ -195,40 +166,19 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const baseUri = getBaseDirectory();
       const dirInfo = await FileSystem.getInfoAsync(baseUri);
       if (!dirInfo.exists) await FileSystem.makeDirectoryAsync(baseUri, { intermediates: true });
-
-      const visitNumber = visits.length + 1;
-      const newVisitName = `VISIT_${visitNumber}_${getFormattedDateTime()}`;
+      const d = new Date(), p = (n: number) => n.toString().padStart(2, '0');
+      const newVisitName = `VISIT_${visits.length + 1}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
       await FileSystem.makeDirectoryAsync(`${baseUri}${newVisitName}/`, { intermediates: true });
-      
       setVisits([...visits, newVisitName].sort());
       setActiveVisit(newVisitName); 
-      Alert.alert("New Visit Created", `Selected: ${newVisitName}`);
-    } catch (e) { Alert.alert("Error", "Could not create visit directory."); }
-  };
-
-  const getFolderMapping = (filename: string, folderName: string) => {
-    const ext = filename.split('.').pop()?.toLowerCase();
-    if (ext === 'txt') return 'comments';
-    if (['m4a', 'wav', 'mp3'].includes(ext!)) return 'audio';
-    if (folderName === 'geotagged_captures') {
-      if (['mp4', 'mov'].includes(ext!)) return 'geotagged_videos';
-      return 'geotagged_photos';
-    }
-    if (folderName === 'attachments') {
-      if (['mp4', 'mov'].includes(ext!)) return 'videos';
-      if (['jpg', 'jpeg', 'png'].includes(ext!)) return 'photos';
-      return 'documents';
-    }
-    if (ext === 'kml') return 'location';
-    return 'documents';
+    } catch (e) {}
   };
 
   const updateFileStats = async () => {
     try {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
       const checkFolders = ['notes', 'attachments', 'geotagged_captures'];
-      let stats: Record<string, number> = { comments: 0, audio: 0, documents: 0, photos: 0, videos: 0, geotagged_photos: 0, geotagged_videos: 0, location: 0, total: 0 };
-      
+      let stats: Record<string, number> = { comments: 0, audio: 0, documents: 0, photos: 0, videos: 0, geotagged_photos: 0, location: 0, total: 0 };
       for (const folder of checkFolders) {
         const fUri = `${visitUri}${folder}/`;
         const info = await FileSystem.getInfoAsync(fUri);
@@ -236,22 +186,18 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           const files = await FileSystem.readDirectoryAsync(fUri);
           files.forEach(f => {
              if (!f.endsWith('.json')) {
-                const category = getFolderMapping(f, folder);
-                stats[category]++;
-                stats.total++;
+                const ext = f.split('.').pop()?.toLowerCase();
+                let cat = 'documents';
+                if (folder === 'notes') cat = ext === 'txt' ? 'comments' : 'audio';
+                else if (folder === 'geotagged_captures') cat = 'geotagged_photos';
+                else if (folder === 'attachments') cat = ['mp4','mov'].includes(ext!) ? 'videos' : ['jpg','png','jpeg'].includes(ext!) ? 'photos' : 'documents';
+                stats[cat]++; stats.total++;
              }
           });
         }
       }
-      
       const rootFiles = await FileSystem.readDirectoryAsync(visitUri);
-      rootFiles.forEach(f => {
-         if (f.endsWith('.kml')) {
-            stats.location++;
-            stats.total++;
-         }
-      });
-      
+      rootFiles.forEach(f => { if (f.endsWith('.kml')) { stats.location++; stats.total++; } });
       setFileStats(stats);
       if (stats.total > 0 && onEdit) onEdit();
     } catch (e) {}
@@ -264,47 +210,14 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     return folderUri;
   };
 
-  const silentEnsureLocation = async () => {
-    try {
-      const visitUri = `${getBaseDirectory()}${activeVisit}/`;
-      const files = await FileSystem.readDirectoryAsync(visitUri);
-      if (files.some(f => f.endsWith('.kml'))) return;
-
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
-      const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${loc.coords.longitude},${loc.coords.latitude},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
-      
-      await FileSystem.writeAsStringAsync(`${visitUri}pin_${getFormattedDateTime()}.kml`, kmlData);
-      updateFileStats();
-    } catch (e) {}
-  };
-
   const startRecording = async () => {
     try {
       const perm = await Audio.requestPermissionsAsync();
-      if (perm.status !== 'granted') return Alert.alert("Permission Denied", "Microphone access required.");
+      if (perm.status !== 'granted') return Alert.alert("Permission Denied");
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
       const { recording: newRecording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      setRecordTime(0);
-      setIsRecordingPaused(false);
-      setRecording(newRecording);
-      silentEnsureLocation();
-    } catch (err) { Alert.alert("Error", "Failed to start recording."); }
-  };
-
-  const togglePauseRecording = async () => {
-    if (!recording) return;
-    try {
-      if (isRecordingPaused) {
-        await recording.startAsync();
-        setIsRecordingPaused(false);
-      } else {
-        await recording.pauseAsync();
-        setIsRecordingPaused(true);
-      }
-    } catch (e) { Alert.alert("Error", "Failed to toggle recording state."); }
+      setRecordTime(0); setIsRecordingPaused(false); setRecording(newRecording);
+    } catch (err) {}
   };
 
   const stopRecording = async () => {
@@ -312,186 +225,154 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-      setRecording(null);
-      setRecordTime(0);
-      setIsRecordingPaused(false);
-      
+      setRecording(null); setRecordTime(0); setIsRecordingPaused(false);
       if (uri) {
         const targetDir = await ensureSubfolder('notes');
-        await FileSystem.copyAsync({ from: uri, to: `${targetDir}audio_${getFormattedDateTime()}.m4a` });
+        const d = new Date();
+        await FileSystem.copyAsync({ from: uri, to: `${targetDir}audio_${d.getTime()}.m4a` });
         updateFileStats();
-        Alert.alert("Success", "Voice note saved.");
       }
-    } catch (err) { Alert.alert("Error", "Failed to save recording."); }
+    } catch (err) {}
   };
 
-  const handleVoiceNote = () => recording ? stopRecording() : startRecording();
+  const injectMarkdown = (type: 'bullet' | 'number' | 'roman') => {
+    setCommentText(prev => {
+      const lines = prev.split('\n');
+      let lastLine = '';
+      for (let i = lines.length - 1; i >= 0; i--) {
+         if (lines[i].trim() !== '') { lastLine = lines[i]; break; }
+      }
+      
+      let prefix = '';
+      if (type === 'bullet') prefix = '• ';
+      if (type === 'number') {
+        const match = lastLine.match(/^(\d+)\.\s/);
+        prefix = match ? `${parseInt(match[1]) + 1}. ` : '1. ';
+      }
+      if (type === 'roman') {
+        const romanMap = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'xi', 'xii', 'xiii', 'xiv', 'xv'];
+        const match = lastLine.match(/^([ivxlc]+)\.\s/i);
+        if (match) {
+           const idx = romanMap.indexOf(match[1].toLowerCase());
+           prefix = idx !== -1 && idx < romanMap.length - 1 ? `${romanMap[idx+1]}. ` : 'i. ';
+        } else prefix = 'i. ';
+      }
+      const newLine = prev === '' || prev.endsWith('\n') ? prefix : `\n${prefix}`;
+      return prev + newLine;
+    });
+  };
 
   const handleSaveComment = async () => {
     if (!commentText.trim()) return;
     try {
       const targetDir = await ensureSubfolder('notes');
-      await FileSystem.writeAsStringAsync(`${targetDir}comment_${getFormattedDateTime()}.txt`, commentText);
-      setCommentText('');
-      setShowCommentModal(false);
-      updateFileStats();
-      silentEnsureLocation();
-    } catch (e) { Alert.alert("Error", "Failed to save comment."); }
+      await FileSystem.writeAsStringAsync(`${targetDir}comment_${Date.now()}.txt`, commentText);
+      setCommentText(''); setShowCommentModal(false); updateFileStats();
+    } catch (e) {}
   };
 
   const handleAttachFile = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: false, multiple: true });
       if (result.canceled || !result.assets?.length) return;
       const targetDir = await ensureSubfolder('attachments');
-      const ext = result.assets[0].name.split('.').pop() || 'file';
-      await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}doc_${getFormattedDateTime()}.${ext}` });
+      for (const asset of result.assets) {
+         const cleanName = asset.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+         await FileSystem.copyAsync({ from: asset.uri, to: `${targetDir}${cleanName}` });
+      }
       updateFileStats();
-      silentEnsureLocation();
-    } catch (e) { Alert.alert("Error", "Failed to attach document."); }
+    } catch (e) {}
   };
 
-  const getFallbackGeoData = async () => {
-     try {
-       const targetDir = `${getBaseDirectory()}${activeVisit}/`;
-       const files = await FileSystem.readDirectoryAsync(targetDir);
-       const kmlFiles = files.filter(f => f.endsWith('.kml'));
-       if (kmlFiles.length > 0) {
-         const latestPin = kmlFiles.sort().reverse()[0];
-         const content = await FileSystem.readAsStringAsync(`${targetDir}${latestPin}`);
-         const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
-         if (coordMatch) {
-           return {
-             lat: parseFloat(coordMatch[2]).toFixed(6),
-             lon: parseFloat(coordMatch[1]).toFixed(6),
-             timestamp: get12HourTime(new Date()),
-             address: "Pinned Location Coordinates",
-             city: "Project", region: "Site", country: "India"
-           };
-         }
-       }
-       const last = await Location.getLastKnownPositionAsync();
-       if (last) {
-         return {
-           lat: last.coords.latitude.toFixed(6), lon: last.coords.longitude.toFixed(6),
-           timestamp: get12HourTime(new Date(last.timestamp)),
-           address: "Cached Device Location", city: "Offline", region: "Mode", country: "India"
-         }
-       }
-     } catch (e) {}
-     return {
-       lat: "0.000000", lon: "0.000000", 
-       timestamp: get12HourTime(new Date()),
-       address: "Location Services Unavailable", city: "-", region: "-", country: ""
-     };
-  };
-
-  const openLiveGeotagCamera = async (mode: 'picture' | 'video') => {
+  const openLiveGeotagCamera = async () => {
     try {
       if (!camPerm?.granted) {
         const res = await reqCamPerm();
         if (!res.granted) return Alert.alert("Camera Permission Denied");
       }
-      if (mode === 'video' && !micPerm?.granted) {
-        const res = await reqMicPerm();
-        if (!res.granted) return Alert.alert("Microphone Permission Denied");
-      }
-
-      setCameraMode(mode);
       setShowLiveCamera(true);
-
-      if (!liveGeoData && !sessionGeoDataRef.current) {
-         const fb = await getFallbackGeoData();
-         setLiveGeoData(fb);
-      } else if (sessionGeoDataRef.current && !liveGeoData) {
-         setLiveGeoData(sessionGeoDataRef.current);
-      }
-
-    } catch (e) { Alert.alert("Camera Error", "Failed to launch camera interface."); }
-  };
-
-  const closeLiveCamera = () => {
-    setShowLiveCamera(false);
-    setIsCameraRecording(false);
+    } catch (e) {}
   };
 
   const captureLiveMedia = async () => {
-    if (!cameraRef) return;
+    if (!cameraRef || isCapturing) return;
     try {
-      const isVideo = cameraMode === 'video';
-      const targetDir = await ensureSubfolder('geotagged_captures');
-      const safeGeoData = liveGeoData || await getFallbackGeoData();
+      setIsCapturing(true);
+      setTimeout(() => setIsCapturing(false), 1000); // 1-second shutter freeze prevents spam crashes
 
-      if (isVideo) {
-        if (isCameraRecording) {
-          cameraRef.stopRecording();
-          setIsCameraRecording(false);
-          closeLiveCamera();
-        } else {
-          setIsCameraRecording(true);
-          const videoRecord = await cameraRef.recordAsync();
-          if (videoRecord) {
-            const fileName = `vid_geo_${getFormattedDateTime()}`;
-            await FileSystem.copyAsync({ from: videoRecord.uri, to: `${targetDir}${fileName}.mp4` });
-            await FileSystem.writeAsStringAsync(`${targetDir}${fileName}.json`, JSON.stringify(safeGeoData));
-            updateFileStats();
-          }
-        }
-      } else {
-        const photo = await cameraRef.takePictureAsync();
-        if (photo) {
-          setStampingPhoto({ uri: photo.uri, geoData: safeGeoData });
+      const safeGeoData = liveGeoData || sessionGeoDataRef.current || { lat: "0.000000", lon: "0.000000", timestamp: formatGeoDate(new Date()), address: "", city: "", region: "", country: "" };
+      const photo = await cameraRef.takePictureAsync({ quality: 1 });
+      
+      if (photo) {
+        // Instantly push to background queue and free the UI
+        setCaptureQueue(q => [...q, { id: Date.now(), uri: photo.uri, geoData: safeGeoData }]);
+        
+        // Auto-add KML ONLY if it's the very first photo
+        const visitUri = `${getBaseDirectory()}${activeVisit}/`;
+        const files = await FileSystem.readDirectoryAsync(visitUri).catch(() => []);
+        if (!files.some(f => f.endsWith('.kml'))) {
+           handlePinGeotag(true, true);
         }
       }
-    } catch (e) { Alert.alert("Capture Error", "Failed to save media."); }
+    } catch (e) {
+      setIsCapturing(false);
+    } 
   };
+
+  const cycleFlashMode = () => setFlashMode(f => f === 'auto' ? 'on' : f === 'on' ? 'off' : 'auto');
 
   const handleCaptureNormalMedia = async (mediaType: 'photo' | 'video') => {
     try {
-      const result = await ImagePicker.launchCameraAsync({ mediaTypes: mediaType === 'video' ? ['videos'] : ['images'], allowsEditing: false });
+      const result = await ImagePicker.launchCameraAsync({ 
+        mediaTypes: mediaType === 'video' ? ['videos'] : ['images'], 
+        allowsEditing: false, videoQuality: 1, quality: 0.9 
+      });
       if (result.canceled || !result.assets?.length) return;
       const targetDir = await ensureSubfolder('attachments');
       const prefix = mediaType === 'video' ? 'vid_' : 'img_';
       const ext = mediaType === 'video' ? 'mp4' : 'jpg';
-      await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}${prefix}${getFormattedDateTime()}.${ext}` });
+      await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}${prefix}${Date.now()}.${ext}` });
       updateFileStats();
-      silentEnsureLocation();
     } catch (e) {}
   };
 
-  const handlePinGeotag = async () => {
-    try {
+  const handlePinGeotag = async (silent = false, isAuto = false) => {
+    const doGeotag = async (replace = false) => {
+      try {
+        const visitUri = `${getBaseDirectory()}${activeVisit}/`;
+        if (replace) {
+          const files = await FileSystem.readDirectoryAsync(visitUri).catch(() => []);
+          const kmlFiles = files.filter(f => f.endsWith('.kml'));
+          if (kmlFiles.length > 0) await FileSystem.deleteAsync(`${visitUri}${kmlFiles.sort().reverse()[0]}`).catch(() => {});
+        }
+        
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') { if (!silent) Alert.alert("Location Denied"); return; }
+        
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${loc.coords.longitude},${loc.coords.latitude},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
+        await FileSystem.writeAsStringAsync(`${visitUri}pin_${Date.now()}.kml`, kmlData);
+        updateFileStats();
+      } catch (err) {
+        if (!silent) Alert.alert("Error", "Could not fetch GPS.");
+      }
+    };
+
+    if (isAuto) {
+      doGeotag(false);
+    } else {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
-      const existingFiles = await FileSystem.readDirectoryAsync(visitUri);
-      const kmlFiles = existingFiles.filter(f => f.endsWith('.kml'));
-
-      const savePin = async (replaceExisting: boolean) => {
-        try {
-          if (replaceExisting && kmlFiles.length > 0) {
-            const latestPin = kmlFiles.sort().reverse()[0];
-            await FileSystem.deleteAsync(`${visitUri}${latestPin}`);
-          }
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status !== 'granted') return Alert.alert("Location Denied");
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          
-          const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${loc.coords.longitude},${loc.coords.latitude},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
-          await FileSystem.writeAsStringAsync(`${visitUri}pin_${getFormattedDateTime()}.kml`, kmlData);
-          updateFileStats();
-          Alert.alert("Geotag Pinned", "KML coordinates saved successfully.");
-        } catch (e) { Alert.alert("Error", "Failed to save Geotag Pin"); }
-      };
-
-      if (kmlFiles.length > 0) {
-        Alert.alert("Geotag Pin Exists", "Pinned locations already exist for this visit.", [
+      const files = await FileSystem.readDirectoryAsync(visitUri).catch(() => []);
+      if (files.some(f => f.endsWith('.kml'))) {
+        Alert.alert("Location Pin", "Adding location pin of this place.", [
           { text: "Cancel", style: "cancel" },
-          { text: "Replace Latest", style: "destructive", onPress: () => savePin(true) },
-          { text: "Add New", onPress: () => savePin(false) }
+          { text: "Replace Latest Pin", onPress: () => doGeotag(true) },
+          { text: "Add New Pin", onPress: () => doGeotag(false) }
         ]);
       } else {
-        savePin(false);
+        doGeotag(false);
       }
-    } catch (e) {}
+    }
   };
 
   const refreshFilesExplorer = async () => {
@@ -500,9 +381,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const info = await FileSystem.getInfoAsync(visitUri);
       if (!info.exists) { setSavedFiles([]); setTotalSessionSize(0); return; }
       
-      let allFiles: {name: string, folder: string, time: number, size: number}[] = [];
-      let totalSize = 0;
-
+      let allFiles: any[] = []; let totalSize = 0;
       const checkFolders = ['notes', 'attachments', 'geotagged_captures', ''];
       
       for (const folder of checkFolders) {
@@ -521,14 +400,8 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           }
         }
       }
-      setSavedFiles(allFiles);
-      setTotalSessionSize(totalSize);
+      setSavedFiles(allFiles); setTotalSessionSize(totalSize);
     } catch (e) {}
-  };
-
-  const openFilesExplorer = async () => {
-    await refreshFilesExplorer();
-    setShowFilesModal(true);
   };
 
   const deleteFile = (folder: string, name: string) => {
@@ -538,33 +411,27 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           try {
             const folderPath = folder === 'root' ? '' : `${folder}/`;
             const uri = `${getBaseDirectory()}${activeVisit}/${folderPath}${name}`;
-            await FileSystem.deleteAsync(uri);
-            const baseName = name.substring(0, name.lastIndexOf('.'));
-            const jsonUri = `${getBaseDirectory()}${activeVisit}/${folderPath}${baseName}.json`;
-            const jsonInfo = await FileSystem.getInfoAsync(jsonUri);
-            if (jsonInfo.exists) await FileSystem.deleteAsync(jsonUri);
-            await refreshFilesExplorer();
-            updateFileStats();
-          } catch (e) { Alert.alert("Error", "Failed to delete file."); }
-        }
-      }
+            await FileSystem.deleteAsync(uri, { idempotent: true }); 
+            if (folder === 'geotagged_captures') {
+               const baseName = name.substring(0, name.lastIndexOf('.'));
+               const jsonUri = `${getBaseDirectory()}${activeVisit}/${folderPath}${baseName}.json`;
+               await FileSystem.deleteAsync(jsonUri, { idempotent: true }).catch(()=>{});
+            }
+            await refreshFilesExplorer(); updateFileStats();
+          } catch (e) {}
+        }}
     ]);
   };
 
   const handlePreviewFile = async (folder: string, name: string) => {
     try {
-      const folderPath = folder === 'root' ? '' : `${folder}/`;
-      const uri = `${getBaseDirectory()}${activeVisit}/${folderPath}${name}`;
+      const uri = `${getBaseDirectory()}${activeVisit}/${folder === 'root' ? '' : `${folder}/`}${name}`;
       const ext = name.split('.').pop()?.toLowerCase() || '';
 
       if (ext === 'kml') {
          const content = await FileSystem.readAsStringAsync(uri);
          const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
-         if (coordMatch) {
-            Linking.openURL(`https://maps.google.com/?q=${coordMatch[2]},${coordMatch[1]}`);
-         } else {
-            Alert.alert("Error", "Corrupted KML file.");
-         }
+         if (coordMatch) Linking.openURL(`https://maps.google.com/?q=${coordMatch[2]},${coordMatch[1]}`);
          return;
       }
 
@@ -574,30 +441,15 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       else if (['mp4', 'mov'].includes(ext)) type = 'video';
       else if (['m4a', 'mp3', 'wav'].includes(ext)) type = 'audio';
 
-      let geoData = null;
-      if (folder === 'geotagged_captures') {
-        const baseName = name.substring(0, name.lastIndexOf('.'));
-        const jsonUri = `${getBaseDirectory()}${activeVisit}/${folderPath}${baseName}.json`;
-        const jsonInfo = await FileSystem.getInfoAsync(jsonUri);
-        if (jsonInfo.exists) geoData = JSON.parse(await FileSystem.readAsStringAsync(jsonUri));
-      }
-
       if (type === 'text') {
         const content = await FileSystem.readAsStringAsync(uri);
         setPreviewFile({ uri, name, type, content });
       } else if (type === 'doc') {
-        if (Platform.OS === 'android') {
-          try {
-            const contentUri = await FileSystem.getContentUriAsync(uri);
-            await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: contentUri, flags: 1 });
-          } catch (e) { await Sharing.shareAsync(uri); }
-        } else {
-          await Sharing.shareAsync(uri); 
-        }
+        await Sharing.shareAsync(uri); 
       } else {
-        setPreviewFile({ uri, name, type, geoData });
+        setPreviewFile({ uri, name, type });
       }
-    } catch (e) { Alert.alert("Preview Error", "Could not load the file preview."); }
+    } catch (e) {}
   };
 
   const displayFiles = useMemo(() => {
@@ -605,7 +457,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     if (filterType !== 'All') {
       filtered = savedFiles.filter(f => {
         const ext = f.name.split('.').pop()?.toLowerCase() || '';
-        if (filterType === 'Images') return ['jpg', 'png'].includes(ext);
+        if (filterType === 'Images') return ['jpg', 'png', 'jpeg'].includes(ext);
         if (filterType === 'Videos') return ['mp4', 'mov'].includes(ext);
         if (filterType === 'Audio') return ['m4a', 'wav'].includes(ext);
         if (filterType === 'Docs') return ['txt', 'pdf', 'csv', 'doc', 'docx', 'kml'].includes(ext);
@@ -620,14 +472,16 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
 
   return (
     <View style={styles.visitContainer}>
-      <Text style={[styles.sectionTitle, { textAlign: 'center' }]}>Field Visit Session</Text>
-      <View style={styles.visitControls}>
-        <TouchableOpacity style={styles.visitBtnLight} onPress={() => setShowVisitModal(true)}>
-          <Ionicons name="list" size={16} color="#334155" style={{ marginRight: 6 }} /><Text style={{ color: '#334155', fontWeight: 'bold', fontSize: 13 }}>Select From Visits</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.visitBtnDark} onPress={createNewVisit}>
-          <Ionicons name="add-circle" size={16} color="#FFF" style={{ marginRight: 6 }} /><Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 13 }}>Create New Visit</Text>
-        </TouchableOpacity>
+      <View style={{ marginBottom: 15 }}>
+         <Text style={styles.visitSectionHeader}>Manage your visit reports here</Text>
+         <View style={styles.visitControls}>
+           <TouchableOpacity style={styles.visitBtnLight} onPress={() => setShowVisitModal(true)}>
+             <Ionicons name="list" size={16} color="#334155" style={{ marginRight: 6 }} /><Text style={{ color: '#334155', fontWeight: 'bold', fontSize: 13 }}>Select From Visits</Text>
+           </TouchableOpacity>
+           <TouchableOpacity style={styles.visitBtnDark} onPress={createNewVisit}>
+             <Ionicons name="add-circle" size={16} color="#FFF" style={{ marginRight: 6 }} /><Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 13 }}>Create New Visit</Text>
+           </TouchableOpacity>
+         </View>
       </View>
 
       {activeVisit ? (
@@ -639,26 +493,19 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
               <Text style={styles.activeVisitText} numberOfLines={1}>{activeVisit}</Text>
             </View>
           </View>
-          
           {fileStats.total > 0 && (
             <View style={styles.statsContainer}>
               <Text style={styles.statsTitle}>Saved Files: {fileStats.total}</Text>
               <View style={styles.statsRow}>
                 {Object.entries(fileStats).map(([key, count]) => {
                   if (key === 'total' || count === 0) return null;
-                  return (
-                    <View key={key} style={styles.statBadge}>
-                      <Text style={styles.statBadgeText}>{count} {key.replace('_', ' ')}</Text>
-                    </View>
-                  );
+                  return <View key={key} style={styles.statBadge}><Text style={styles.statBadgeText}>{count} {key.replace('_', ' ')}</Text></View>;
                 })}
               </View>
             </View>
           )}
         </View>
-      ) : (
-        <Text style={styles.noVisitText}>Select or Create a visit report session to unlock media buttons.</Text>
-      )}
+      ) : <Text style={styles.noVisitText}>Select or Create a visit report session to unlock media buttons.</Text>}
 
       {recording && (
         <View style={styles.recordingUIBox}>
@@ -667,7 +514,9 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
             <Text style={styles.recordingTime}>{formatTime(recordTime)}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#EFF6FF', marginRight: 10 }]} onPress={togglePauseRecording}>
+             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#EFF6FF', marginRight: 10 }]} onPress={() => {
+                isRecordingPaused ? recording.startAsync().then(() => setIsRecordingPaused(false)) : recording.pauseAsync().then(() => setIsRecordingPaused(true));
+             }}>
                 <Ionicons name={isRecordingPaused ? "play" : "pause"} size={20} color="#2563EB" />
              </TouchableOpacity>
              <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#FEE2E2' }]} onPress={stopRecording}>
@@ -678,92 +527,114 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </View>
       )}
 
+      {/* Grid Padding fixed so whitespace is gone */}
       <View style={[styles.actionGrid, !activeVisit && { opacity: 0.3 }]} pointerEvents={!activeVisit ? 'none' : 'auto'}>
-        <ActionButton icon={recording ? "stop-circle" : "mic"} label={recording ? "Recording..." : "Voice Note"} color={recording ? "#EF4444" : "#EA580C"} onPress={handleVoiceNote} />
+        <ActionButton icon={recording ? "stop-circle" : "mic"} label={recording ? "Recording..." : "Voice Note"} color={recording ? "#EF4444" : "#EA580C"} onPress={() => recording ? stopRecording() : startRecording()} />
         <ActionButton icon="chatbubble-ellipses" label="Text Comment" color="#059669" onPress={() => setShowCommentModal(true)} />
-        <ActionButton icon="attach" label="Attach File" color="#7C3AED" onPress={handleAttachFile} />
+        <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={() => handlePinGeotag(false)} disabled={recording !== null} />
         
-        <ActionButton icon="film" label="Geotag Video" color="#9333EA" onPress={() => openLiveGeotagCamera('video')} disabled={recording !== null} />
-        <ActionButton icon="image" label="Geotag Photo" color="#0284C7" onPress={() => openLiveGeotagCamera('picture')} disabled={recording !== null} />
-        <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={handlePinGeotag} disabled={recording !== null} />
-        
-        <ActionButton icon="videocam-outline" label="Normal Video" color="#DB2777" onPress={() => handleCaptureNormalMedia('video')} disabled={recording !== null} />
         <ActionButton icon="camera-outline" label="Normal Photo" color="#2563EB" onPress={() => handleCaptureNormalMedia('photo')} disabled={recording !== null} />
-        <ActionButton icon="folder-open" label="Show Files" color="#475569" onPress={openFilesExplorer} />
+        <ActionButton icon="image" label="Geotag Photo" color="#0284C7" onPress={openLiveGeotagCamera} disabled={recording !== null} />
+        <ActionButton icon="videocam-outline" label="Normal Video" color="#DB2777" onPress={() => handleCaptureNormalMedia('video')} disabled={recording !== null} />
+        
+        <View style={styles.centeredRow}>
+           <ActionButton icon="attach" label="Attach Files" color="#7C3AED" onPress={handleAttachFile} style={{ width: '45%' }} />
+           <ActionButton icon="folder-open" label="Show Files" color="#475569" onPress={() => { refreshFilesExplorer(); setShowFilesModal(true); }} style={{ width: '45%' }} />
+        </View>
       </View>
 
+      {/* LIVE CAMERA */}
       <Modal visible={showLiveCamera} transparent animationType="none">
-         <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center' }}>
+         <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center' }}>
             <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
-              <CameraView ref={setCameraRef} style={StyleSheet.absoluteFillObject} mode={cameraMode} facing={cameraFacing} />
-              <View style={StyleSheet.absoluteFillObject}>
-                 <View style={{ flex: 1, padding: 10, justifyContent: 'space-between' }}>
-                    <View style={{ alignItems: 'center', paddingTop: 10 }} />
-                    <View style={{ paddingBottom: 5 }}>
-                      {liveGeoData && <GPSCameraOverlay geoData={liveGeoData} />}
-                    </View>
-                 </View>
-              </View>
-              {flashMessage && (
-                 <View style={{ position: 'absolute', top: '40%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', padding: 20, borderRadius: 12 }}>
-                    <Ionicons name="checkmark-circle" size={48} color="#10B981" style={{ alignSelf: 'center', marginBottom: 10 }} />
-                    <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 18 }}>{flashMessage}</Text>
-                 </View>
+              
+              {(!liveGeoData || liveGeoData.lat === "0.000000") && (
+                <View style={styles.gpsWaitingOverlay}>
+                  <ActivityIndicator size="large" color="#FFF" />
+                  <Text style={{color:'#FFF', marginTop: 10, fontWeight: 'bold'}}>Waiting for GPS signals...</Text>
+                </View>
               )}
+
+              <CameraView ref={setCameraRef} style={{ flex: 1 }} zoom={zoom} mode="picture" facing={cameraFacing} flash={flashMode === 'auto' ? 'auto' : flashMode === 'on' ? 'on' : 'off'} />
+              
+              <View style={styles.cameraTopTools}>
+                 <TouchableOpacity onPress={() => setAspectRatio(a => a === '16:9' ? '4:3' : '16:9')} style={styles.cameraTopBtn}>
+                   <Ionicons name="expand" size={24} color="#FFF" />
+                   <Text style={styles.cameraTopBtnText}>{aspectRatio}</Text>
+                 </TouchableOpacity>
+
+                 <View style={{ alignItems: 'center' }}>
+                    <TouchableOpacity onPress={() => setShowZoom(!showZoom)} style={[styles.cameraTopBtn, showZoom && { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
+                       <Ionicons name="search" size={24} color="#FFF" />
+                       <Text style={styles.cameraTopBtnText}>{Math.round(zoom * 100)}%</Text>
+                    </TouchableOpacity>
+                    {showZoom && (
+                       <View style={styles.zoomControls}>
+                          <TouchableOpacity onPress={() => setZoom(z => Math.max(0, z - 0.1))} style={styles.zoomBtn}><Text style={styles.zoomBtnText}>-</Text></TouchableOpacity>
+                          <TouchableOpacity onPress={() => setZoom(z => Math.min(1, z + 0.1))} style={styles.zoomBtn}><Text style={styles.zoomBtnText}>+</Text></TouchableOpacity>
+                       </View>
+                    )}
+                 </View>
+
+                 <TouchableOpacity onPress={cycleFlashMode} style={styles.cameraTopBtn}>
+                   <Ionicons name={flashMode === 'on' ? "flash" : flashMode === 'auto' ? "flash-outline" : "flash-off"} size={24} color="#FFF" />
+                   <Text style={styles.cameraTopBtnText}>{flashMode}</Text>
+                 </TouchableOpacity>
+              </View>
+
+              {/* OVERLAY PLACED INSIDE CAMERA VIEW (At bottom) */}
+              <View style={{ position: 'absolute', bottom: 10, left: 10, right: 10, pointerEvents: 'none' }}>
+                 {liveGeoData && <GPSCameraOverlay geoData={liveGeoData} isLive />}
+              </View>
             </View>
             
-            <View style={[styles.cameraControlsContainer, { position: 'absolute', bottom: 0, width: '100%' }]}>
-               <TouchableOpacity onPress={closeLiveCamera} style={styles.cameraSideBtn}>
+            {/* CONTROLS TAKE UP REMAINING SPACE BELOW CAMERA */}
+            <View style={styles.cameraControlsContainer}>
+               <TouchableOpacity onPress={() => setShowLiveCamera(false)} style={styles.cameraSideBtn}>
                  <Ionicons name="close" size={36} color="#FFF" />
                </TouchableOpacity>
                
-               {cameraMode === 'video' ? (
-                  isCameraRecording ? (
-                    <View style={{ alignItems: 'center', flexDirection: 'row', gap: 15 }}>
-                       <Text style={styles.camTimerText}>{formatTime(camRecordTime)}</Text>
-                       <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraStopBtn}>
-                         <Ionicons name="square" size={24} color="#FFF" />
-                       </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraCaptureBtnOuter}>
-                      <View style={[styles.cameraCaptureBtnInner, { backgroundColor: '#EF4444' }]} />
-                    </TouchableOpacity>
-                  )
-               ) : (
-                 <TouchableOpacity onPress={captureLiveMedia} style={styles.cameraCaptureBtnOuter}>
-                   <View style={styles.cameraCaptureBtnInner} />
-                 </TouchableOpacity>
-               )}
+               <TouchableOpacity onPress={captureLiveMedia} disabled={isCapturing} style={[styles.cameraCaptureBtnOuter, isCapturing && { borderColor: '#94A3B8' }]}>
+                 <View style={[styles.cameraCaptureBtnInner, isCapturing && { backgroundColor: '#94A3B8' }]} />
+               </TouchableOpacity>
                
-               {(isCameraRecording && cameraMode === 'video') ? (
-                  <View style={{ width: 60 }} /> 
-               ) : (
-                  <TouchableOpacity onPress={() => setCameraFacing(f => f === 'back' ? 'front' : 'back')} style={styles.cameraSideBtn}>
-                    <Ionicons name="camera-reverse" size={32} color="#FFF" />
-                  </TouchableOpacity>
-               )}
+               <TouchableOpacity onPress={() => setCameraFacing(f => f === 'back' ? 'front' : 'back')} style={styles.cameraSideBtn}>
+                 <Ionicons name="camera-reverse" size={28} color="#FFF" />
+               </TouchableOpacity>
             </View>
+            
+            {captureQueue.length > 0 && (
+               <View style={styles.photoQueueToast}>
+                 <ActivityIndicator size="small" color="#FFF" style={{marginRight: 8}}/>
+                 <Text style={{color: '#FFF', fontWeight: 'bold'}}>Saving {captureQueue.length} photo(s)...</Text>
+               </View>
+            )}
          </View>
       </Modal>
 
-      <View style={{ position: 'absolute', left: -10000 }}>
-        {stampingPhoto && (
-          <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
-            <Image source={{ uri: stampingPhoto?.uri }} style={{ flex: 1, resizeMode: 'cover' }} />
-            <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10 }}>
-               <GPSCameraOverlay geoData={stampingPhoto?.geoData} />
-            </View>
-          </ViewShot>
-        )}
-      </View>
+      {/* INVISIBLE BACKGROUND RENDERER (Processes queue without blocking camera) */}
+      {captureQueue.length > 0 && (
+        <View style={{ position: 'absolute', top: -10000, left: -10000, width: 1, height: 1, overflow: 'hidden', opacity: 0 }}>
+          <View style={{ width: HIDDEN_WIDTH, height: HIDDEN_HEIGHT, backgroundColor: '#000' }}>
+            <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 1.0 }} style={{ flex: 1 }}>
+              <Image source={{ uri: captureQueue[0].uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} />
+              <View style={{ position: 'absolute', bottom: 30, left: 20, right: 20 }}>
+                 <GPSCameraOverlay geoData={captureQueue[0].geoData} scale={2.5} />
+              </View>
+            </ViewShot>
+          </View>
+        </View>
+      )}
 
       <Modal visible={showVisitModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowVisitModal(false)}>
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}><Text style={styles.modalTitle}>Select Visit Session</Text></View>
-              <FlatList data={visits} keyExtractor={(i) => i} renderItem={({ item }) => (
+            <View style={[styles.modalContent, { maxHeight: '60%' }]}>
+              <View style={styles.modalHeader}>
+                 <Text style={styles.modalTitle}>Select Visit Session</Text>
+                 <TouchableOpacity onPress={() => setShowVisitModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
+              </View>
+              <FlatList data={visits} keyExtractor={(i) => i} contentContainerStyle={{ paddingBottom: 40 }} ListFooterComponent={<Text style={{textAlign: 'center', padding: 15, color: '#94A3B8', fontWeight: 'bold'}}>------- {visits.length} visits in total ------</Text>} renderItem={({ item }) => (
                   <TouchableOpacity style={[styles.modalItem, activeVisit === item && styles.modalItemSelected]} onPress={() => { setActiveVisit(item); setShowVisitModal(false); }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <Ionicons name="folder" size={20} color={activeVisit === item ? "#2563EB" : "#64748B"} style={{marginRight: 10}} />
@@ -777,19 +648,24 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </TouchableWithoutFeedback>
       </Modal>
 
-      <Modal visible={showCommentModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '50%' }]}>
+      <Modal visible={showCommentModal} transparent animationType="slide">
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F1F5F9' }]}>
+          <View style={[styles.modalContent, { paddingBottom: 30, backgroundColor: '#F1F5F9', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 40 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Text Comment</Text>
               <TouchableOpacity onPress={() => setShowCommentModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
             </View>
             <View style={{ padding: 20 }}>
-              <TextInput style={styles.commentInput} multiline placeholder="Write observation..." value={commentText} onChangeText={setCommentText} />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.commentToolbar} keyboardShouldPersistTaps="always">
+                 <TouchableOpacity style={styles.toolbarBtn} onPress={() => injectMarkdown('bullet')}><Ionicons name="list" size={16} color="#2563EB" /><Text style={styles.toolbarBtnText}>Bullets</Text></TouchableOpacity>
+                 <TouchableOpacity style={styles.toolbarBtn} onPress={() => injectMarkdown('number')}><Ionicons name="list-circle" size={16} color="#2563EB" /><Text style={styles.toolbarBtnText}>Numbers</Text></TouchableOpacity>
+                 <TouchableOpacity style={styles.toolbarBtn} onPress={() => injectMarkdown('roman')}><Text style={styles.toolbarBtnText}>Roman</Text></TouchableOpacity>
+              </ScrollView>
+              <TextInput ref={commentInputRef} style={styles.commentInput} multiline placeholder="Write observation..." value={commentText} onChangeText={setCommentText} autoFocus />
               <TouchableOpacity style={styles.saveCommentBtn} onPress={handleSaveComment}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Save Comment</Text></TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={showFilesModal} transparent animationType="fade">
@@ -801,13 +677,12 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
                   <Text style={styles.modalTitle}>Files in Session ({formatBytes(totalSessionSize)})</Text>
                   <TouchableOpacity onPress={() => setShowFilesModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
                 </View>
-                
                 <View style={styles.filterControls}>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    <TouchableOpacity style={styles.controlChip} onPress={() => setSortBy(sortBy === 'Date' ? 'Name' : 'Date')}>
+                    <TouchableOpacity style={[styles.controlChip, {backgroundColor: '#F8FAFC'}]} onPress={() => setSortBy(sortBy === 'Date' ? 'Name' : 'Date')}>
                       <Text style={styles.controlChipText}>Sort: {sortBy}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.controlChip} onPress={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}>
+                    <TouchableOpacity style={[styles.controlChip, {backgroundColor: '#F8FAFC'}]} onPress={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}>
                       <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={14} color="#2563EB" />
                     </TouchableOpacity>
                     {['All', 'Images', 'Videos', 'Audio', 'Docs'].map(f => (
@@ -817,7 +692,6 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
                     ))}
                   </ScrollView>
                 </View>
-
                 <FlatList
                   data={displayFiles}
                   keyExtractor={(item, idx) => `${item.folder}_${idx}`}
@@ -825,15 +699,10 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
                     <View style={styles.fileItemRow}>
                       <TouchableOpacity style={styles.fileItemContent} onPress={() => handlePreviewFile(item.folder, item.name)}>
                         <Ionicons name="document-text" size={24} color="#2563EB" style={{marginRight: 15}} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.fileItemName} numberOfLines={1}>{item.name}</Text>
-                          <Text style={styles.fileItemFolder}>{item.folder === 'root' ? '/Location Pin' : `/${item.folder}`}</Text>
-                        </View>
+                        <View style={{ flex: 1 }}><Text style={styles.fileItemName} numberOfLines={1}>{item.name}</Text><Text style={styles.fileItemFolder}>{item.folder === 'root' ? '/Location Pin' : `/${item.folder}`}</Text></View>
                         <Text style={styles.fileItemSize}>{formatBytes(item.size)}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => deleteFile(item.folder, item.name)} style={styles.deleteFileBtn}>
-                        <Ionicons name="trash" size={20} color="#EF4444" />
-                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => deleteFile(item.folder, item.name)} style={styles.deleteFileBtn}><Ionicons name="trash" size={20} color="#EF4444" /></TouchableOpacity>
                     </View>
                   )}
                   ListEmptyComponent={<Text style={{ padding: 20, textAlign: 'center', color: '#94A3B8' }}>No files match criteria.</Text>}
@@ -844,7 +713,6 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* MEDIA PREVIEW OVERLAY */}
       <Modal visible={!!previewFile} transparent animationType="slide">
         <View style={styles.previewOverlay}>
           <View style={styles.previewHeader}>
@@ -853,21 +721,8 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           </View>
           <View style={styles.previewContainer}>
             {previewFile?.type === 'text' && <ScrollView style={styles.previewTextWrapper}><Text style={styles.previewText}>{previewFile.content}</Text></ScrollView>}
-            
-            {previewFile?.type === 'image' && (
-               <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center' }}>
-                 <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
-                    <Image source={{ uri: previewFile.uri }} style={{ width: '100%', height: '100%', resizeMode: 'contain' }} />
-                    {previewFile.geoData && ( 
-                       <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10 }}>
-                         <GPSCameraOverlay geoData={previewFile.geoData} />
-                       </View>
-                    )}
-                 </View>
-               </View>
-            )}
-
-            {previewFile?.type === 'video' && <VideoPreview uri={previewFile.uri} geoData={previewFile.geoData} SCREEN_WIDTH={SCREEN_WIDTH} CAMERA_HEIGHT={CAMERA_HEIGHT} />}
+            {previewFile?.type === 'image' && <Image source={{ uri: previewFile.uri }} style={{ width: '100%', height: '100%', resizeMode: 'contain' }} />}
+            {previewFile?.type === 'video' && <VideoPreview uri={previewFile.uri} />}
             {previewFile?.type === 'audio' && <AudioPreview uri={previewFile.uri} />}
           </View>
         </View>
@@ -876,20 +731,9 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   );
 }
 
-const VideoPreview = ({ uri, geoData, SCREEN_WIDTH, CAMERA_HEIGHT }: { uri: string, geoData?: any, SCREEN_WIDTH: number, CAMERA_HEIGHT: number }) => {
+const VideoPreview = ({ uri }: { uri: string }) => {
   const player = useVideoPlayer(uri, player => { player.play(); });
-  return (
-    <View style={styles.videoWrapper}>
-      <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
-         <VideoView player={player} style={{ flex: 1 }} fullscreenOptions={{ ios: { active: false }, android: { active: false } }} />
-         {geoData && (
-            <View style={{ position: 'absolute', bottom: 15, left: 10, right: 10, pointerEvents: 'none' }}>
-              <GPSCameraOverlay geoData={geoData} />
-            </View>
-         )}
-      </View>
-    </View>
-  );
+  return <View style={styles.videoWrapper}><VideoView player={player} style={{ flex: 1, width: '100%' }} /></View>;
 };
 
 const AudioPreview = ({ uri }: { uri: string }) => {
@@ -903,100 +747,99 @@ const AudioPreview = ({ uri }: { uri: string }) => {
     return () => clearInterval(interval);
   }, [player]);
 
-  const scrubForward = () => player.seekTo(player.currentTime + 5);
-  const scrubBackward = () => player.seekTo(Math.max(0, player.currentTime - 5));
-
   return (
     <View style={styles.videoWrapper}>
       <Ionicons name="musical-notes" size={80} color="#334155" style={{ marginBottom: 40 }} />
       <Text style={styles.audioTextLabel}>Audio Note Player</Text>
-      
       <View style={styles.audioProgressContainer}>
-        <View style={styles.audioProgressBarBg}>
-          <View style={[styles.audioProgressBarFill, { width: `${(position / duration) * 100}%` }]} />
-        </View>
+        <View style={styles.audioProgressBarBg}><View style={[styles.audioProgressBarFill, { width: `${(position / duration) * 100}%` }]} /></View>
       </View>
-
       <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 30, gap: 30 }}>
-        <TouchableOpacity onPress={scrubBackward}><Ionicons name="play-back" size={36} color="#FFF" /></TouchableOpacity>
-        <TouchableOpacity onPress={() => player.playing ? player.pause() : player.play()}>
-          <Ionicons name={player.playing ? "pause-circle" : "play-circle"} size={64} color="#2563EB" />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={scrubForward}><Ionicons name="play-forward" size={36} color="#FFF" /></TouchableOpacity>
+        <TouchableOpacity onPress={() => player.seekTo(Math.max(0, player.currentTime - 5))}><Ionicons name="play-back" size={36} color="#FFF" /></TouchableOpacity>
+        <TouchableOpacity onPress={() => player.playing ? player.pause() : player.play()}><Ionicons name={player.playing ? "pause-circle" : "play-circle"} size={64} color="#2563EB" /></TouchableOpacity>
+        <TouchableOpacity onPress={() => player.seekTo(player.currentTime + 5)}><Ionicons name="play-forward" size={36} color="#FFF" /></TouchableOpacity>
       </View>
     </View>
   );
 };
 
-const GPSCameraOverlay = ({ geoData }: { geoData: any }) => {
-  const isInvalid = geoData.lat === "0.000000";
-  const mapUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=15&size=150x150&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
+const GPSCameraOverlay = ({ geoData, scale = 1, isLive = false }: { geoData: any, scale?: number, isLive?: boolean }) => {
+  const [liveTime, setLiveTime] = useState(geoData.timestamp);
+  
+  useEffect(() => {
+     if (!isLive) return;
+     const interval = setInterval(() => setLiveTime(formatGeoDate(new Date())), 1000);
+     return () => clearInterval(interval);
+  }, [isLive]);
+
+  const displayTime = isLive ? liveTime : geoData.timestamp;
+
+  const mapUrl = GOOGLE_MAPS_API_KEY 
+    ? `https://maps.googleapis.com/maps/api/staticmap?center=${geoData.lat},${geoData.lon}&zoom=15&size=200x200&markers=color:red%7C${geoData.lat},${geoData.lon}&key=${GOOGLE_MAPS_API_KEY}`
+    : `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=16&size=400x400&maptype=mapnik&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
   
   return (
-    <View style={styles.gpsOverlayContainer}>
+    <View style={[styles.gpsOverlayContainer, { transform: [{ scale }], transformOrigin: 'bottom left' }]}>
       <View style={styles.gpsMapSquare}>
-         {isInvalid ? (
-            <View style={{flex: 1, backgroundColor: '#334155', justifyContent: 'center', alignItems: 'center'}}>
-               <Ionicons name="map" size={32} color="#94A3B8" />
-            </View>
-         ) : (
-            <Image source={{ uri: mapUrl }} style={{ width: '100%', height: '100%' }} />
-         )}
-         <Text style={styles.googleWatermark}>Google</Text>
+         {geoData.lat === "0.000000" ? <View style={{flex: 1, backgroundColor: '#334155', justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={32} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ width: '100%', height: '100%' }} />}
       </View>
       <View style={styles.gpsTextContainer}>
          <Text style={styles.gpsTitle} numberOfLines={1}>{geoData.city}, {geoData.region}, {geoData.country} 🇮🇳</Text>
-         <Text style={styles.gpsAddress} numberOfLines={3}>{geoData.address}</Text>
+         <Text style={styles.gpsAddress} numberOfLines={2}>{geoData.address}</Text>
          <Text style={styles.gpsCoords}>Lat {geoData.lat}° Long {geoData.lon}°</Text>
-         <Text style={styles.gpsTime}>{geoData.timestamp}</Text>
+         <Text style={styles.gpsTime}>{displayTime}</Text>
       </View>
     </View>
   );
 };
 
-const ActionButton = ({ icon, label, color, disabled, onPress }: any) => (
-  <TouchableOpacity style={[styles.actionBtn, disabled && { opacity: 0.4 }]} disabled={disabled} onPress={onPress} activeOpacity={0.7}>
+const ActionButton = ({ icon, label, color, disabled, onPress, style }: any) => (
+  <TouchableOpacity style={[styles.actionBtn, disabled && { opacity: 0.4 }, style]} disabled={disabled} onPress={onPress} activeOpacity={0.7}>
     <View style={[styles.actionIconWrap, { backgroundColor: `${color}15` }]}><Ionicons name={icon} size={22} color={color} /></View>
     <Text style={styles.actionLabel}>{label}</Text>
   </TouchableOpacity>
 );
 
 const styles = StyleSheet.create({
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 12, textTransform: 'uppercase' },
-  visitContainer: { backgroundColor: '#FFF', padding: 16, borderRadius: 16, marginBottom: 25, borderWidth: 1, borderColor: '#E2E8F0' },
-  visitControls: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
+  visitContainer: { backgroundColor: '#FFF', padding: 16, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  visitSectionHeader: { fontSize: 13, fontWeight: '800', color: '#475569', textAlign: 'center', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  visitControls: { flexDirection: 'row', justifyContent: 'space-between' },
   visitBtnLight: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flex: 1, marginRight: 10 },
   visitBtnDark: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#2563EB', flex: 1 },
   activeVisitBox: { flexDirection: 'row', backgroundColor: '#DCFCE7', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#BBF7D0' },
   activeVisitLabel: { color: '#166534', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginBottom: 2 },
   activeVisitText: { color: '#14532D', fontSize: 15, fontWeight: '800' },
-  
   statsContainer: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 10, marginBottom: 20, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   statsTitle: { fontSize: 16, fontWeight: 'bold', color: '#1E293B', marginBottom: 10 },
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
   statBadge: { backgroundColor: '#DBEAFE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#BFDBFE' },
   statBadgeText: { fontSize: 12, color: '#1E40AF', fontWeight: '700', textTransform: 'capitalize' },
-  
   noVisitText: { color: '#94A3B8', fontSize: 13, textAlign: 'center', marginBottom: 15, fontStyle: 'italic' },
-  
   recordingUIBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FEF2F2', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', marginBottom: 15 },
   redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#EF4444', marginRight: 8 },
   recordingTime: { fontSize: 16, fontWeight: 'bold', color: '#991B1B' },
   recordControlBtn: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 8 },
   
-  actionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'space-between' },
-  actionBtn: { width: '31%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 2 },
+  actionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: '3%', justifyContent: 'flex-start', paddingBottom: 0 },
+  actionBtn: { width: '31%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 10 },
+  actionBtnPlaceholder: { width: '31%' },
+  centeredRow: { width: '100%', flexDirection: 'row', justifyContent: 'center', gap: '4%', marginTop: 5 },
   actionIconWrap: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   actionLabel: { fontSize: 10, fontWeight: '700', color: '#475569', textAlign: 'center' },
   
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 20 },
+  modalOverlayCen: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1E293B' },
   modalItem: { flexDirection: 'row', justifyContent: 'space-between', padding: 18, borderBottomWidth: 1, borderColor: '#F1F5F9', alignItems: 'center' },
   modalItemSelected: { backgroundColor: '#EFF6FF' },
   modalItemText: { fontSize: 16, color: '#334155' },
-  commentInput: { backgroundColor: '#F1F5F9', padding: 15, borderRadius: 10, height: 100, textAlignVertical: 'top', fontSize: 15 },
+  
+  commentToolbar: { flexDirection: 'row', marginBottom: 10 },
+  toolbarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginRight: 8 },
+  toolbarBtnText: { marginLeft: 4, fontWeight: 'bold', color: '#334155', fontSize: 12 },
+  commentInput: { backgroundColor: '#FFF', padding: 15, borderRadius: 10, height: 120, textAlignVertical: 'top', fontSize: 15, borderWidth: 1, borderColor: '#E2E8F0' },
   saveCommentBtn: { backgroundColor: '#059669', padding: 15, borderRadius: 10, alignItems: 'center', marginTop: 15 },
   
   filterControls: { flexDirection: 'row', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#E2E8F0' },
@@ -1021,19 +864,27 @@ const styles = StyleSheet.create({
   audioProgressBarBg: { width: '100%', height: 6, backgroundColor: '#334155', borderRadius: 3 },
   audioProgressBarFill: { height: 6, backgroundColor: '#2563EB', borderRadius: 3 },
   
-  cameraControlsContainer: { height: 140, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 40, backgroundColor: '#000' },
-  cameraSideBtn: { padding: 10, borderRadius: 30, width: 60, alignItems: 'center' },
+  cameraTopTools: { position: 'absolute', top: 20, width: '100%', flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 20, zIndex: 10 },
+  cameraTopBtn: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 12, minWidth: 60 },
+  cameraTopBtnText: { color: '#FFF', fontSize: 11, fontWeight: 'bold', marginTop: 4, textTransform: 'uppercase' },
+
+  zoomControls: { flexDirection: 'row', marginTop: 10, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, overflow: 'hidden' },
+  zoomBtn: { paddingHorizontal: 20, paddingVertical: 10 },
+  zoomBtnText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
+
+  cameraControlsContainer: { flex: 1, width: '100%', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 30, backgroundColor: '#000' },
+  cameraSideBtn: { padding: 10, borderRadius: 30, width: 60, alignItems: 'center', justifyContent: 'center' },
   cameraCaptureBtnOuter: { width: 74, height: 74, borderRadius: 37, borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center' },
   cameraCaptureBtnInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFF' },
-  cameraStopBtn: { padding: 15, backgroundColor: 'rgba(239, 68, 68, 0.2)', borderRadius: 30, borderWidth: 2, borderColor: '#EF4444' },
-  camTimerText: { color: '#FFF', fontSize: 18, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
   
+  gpsWaitingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 50 },
   gpsOverlayContainer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 5, paddingBottom: 5 },
-  gpsMapSquare: { width: 90, height: 90, backgroundColor: '#E2E8F0', borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#FFF', marginRight: 10, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3, zIndex: 2 },
-  googleWatermark: { position: 'absolute', bottom: 4, left: 6, color: '#FFF', fontSize: 12, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3 },
+  gpsMapSquare: { width: 90, height: 90, backgroundColor: '#E2E8F0', borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#FFF', marginRight: 10 },
   gpsTextContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 12, minHeight: 90, justifyContent: 'center' },
   gpsTitle: { color: '#FFF', fontSize: 13, fontWeight: 'bold', marginBottom: 2 },
   gpsAddress: { color: '#E2E8F0', fontSize: 10, marginBottom: 4, lineHeight: 14 },
   gpsCoords: { color: '#FFF', fontSize: 10, fontWeight: '600' },
-  gpsTime: { color: '#FFF', fontSize: 10, marginTop: 4 }
+  gpsTime: { color: '#FFF', fontSize: 10, marginTop: 4 },
+  
+  photoQueueToast: { position: 'absolute', top: 100, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, zIndex: 100 }
 });
