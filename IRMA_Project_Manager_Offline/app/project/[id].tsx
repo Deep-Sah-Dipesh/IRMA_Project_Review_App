@@ -11,6 +11,10 @@ import { Ionicons } from '@expo/vector-icons';
 import VisitManager from '../../components/VisitManager';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 
+// --- NEW IMPORTS: Global styles and location helpers ---
+import { globalStyles } from '../../styles/globalStyles';
+import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
+
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
   const parts = dateStr.split('-');
@@ -41,6 +45,7 @@ export default function ProjectDetails() {
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
+  const [hasKml, setHasKml] = useState(false); // Track if a KML file exists locally
   
   const [latestObs, setLatestObs] = useState<any[]>([]);
   const [prevObs, setPrevObs] = useState<any[]>([]);
@@ -56,11 +61,12 @@ export default function ProjectDetails() {
     setLoading(true); setDbError(null);
     try {
       let projData;
+      // Updated queries to LEFT JOIN with project_details to capture latitude, longitude, and personnel info
       if (tenderId && tenderId !== 'UNKNOWN_TENDER' && tenderId.trim() !== '') {
-        projData = db.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? AND tender_id = ? LIMIT 1`, [projectId, tenderId]);
+        projData = db.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? AND t.tender_id = ? LIMIT 1`, [projectId, tenderId]);
       }
       if (!projData) {
-        projData = db.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? LIMIT 1`, [projectId]);
+        projData = db.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? LIMIT 1`, [projectId]);
       }
 
       if (!projData) { setProject(null); setLoading(false); return; }
@@ -81,9 +87,17 @@ export default function ProjectDetails() {
   useEffect(() => {
     let isMounted = true;
     if (!projectId) return;
-    const timeout = setTimeout(() => { if (isMounted) loadData(); }, 50);
+    const timeout = setTimeout(() => { 
+      if (isMounted) {
+        loadData(); 
+        // Scan for KML file right after loading DB records
+        getProjectsWithLocalKmls().then(kmls => {
+          if (isMounted) setHasKml(kmls.has(sanitizedFolder));
+        });
+      }
+    }, 50);
     return () => { isMounted = false; clearTimeout(timeout); };
-  }, [loadData, projectId]);
+  }, [loadData, projectId, sanitizedFolder]);
 
   const handleBackNavigation = () => hasEdited ? router.replace('/(tabs)/dashboard') : router.back();
 
@@ -176,9 +190,10 @@ export default function ProjectDetails() {
     Alert.alert("Copied", `${label} details copied to clipboard.`);
   };
 
-  if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text></View>;
+  if (loading) return <View style={globalStyles.centerContainer}><ActivityIndicator size="large" color="#2563EB" /><Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text></View>;
+  
   if (dbError || !project) return (
-    <View style={styles.centerLoading}>
+    <View style={globalStyles.centerContainer}>
       <Ionicons name="warning" size={48} color="#EF4444" style={{ marginBottom: 10 }} />
       <Text style={styles.errorText}>{!project ? "Project Not Found" : "Connection Interrupted"}</Text>
       <TouchableOpacity onPress={() => loadData()} style={[styles.goBackBtn, { backgroundColor: '#10B981', marginBottom: 10 }]}><Text style={{color: '#FFF'}}>Retry</Text></TouchableOpacity>
@@ -189,7 +204,7 @@ export default function ProjectDetails() {
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
 
   return (
-    <View style={styles.container}>
+    <View style={globalStyles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBackNavigation} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#1E293B" /></TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
@@ -212,10 +227,10 @@ export default function ProjectDetails() {
          </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 15, paddingBottom: 20 }}>
+      <ScrollView contentContainerStyle={globalStyles.scrollContent}>
         {activeTab === 'details' && (
           <View>
-            <View style={styles.card}>
+            <View style={globalStyles.card}>
               <Text style={styles.projectTitle}>{project.project_title || 'Untitled Project'}</Text>
               <Text style={styles.projectTypeTag}>{project.project_type || 'N/A'}</Text>
               
@@ -230,10 +245,26 @@ export default function ProjectDetails() {
                 <DataCell label="Est. CAPEX" value={`₹${project.est_capex || '0'} Cr`} />
                 <DataCell label="Est. O&M" value={`₹${project.est_o_m || '0'} Cr`} />
                 <DataCell label="Awarded CAPEX" value={`₹${project.awarded_capex || project.capex || '0'} Cr`} color="#2563EB" />
-                <DataCell label="Awarded O&M" value={`₹${project.awarded_o_m || project.o_m || '0'} Cr`} color="#2563EB" />
+                <DataCell label="Awarded O&M" value={`₹${project.awarded_om || project.om || '0'} Cr`} color="#2563EB" />
                 
                 <DataCell label="Physical Progress" value={`${project.physical_progress || '0'}%`} color="#16A34A" />
                 <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
+              </View>
+
+              {/* --- NEW: Locate Buttons placed exactly above Scope of Work --- */}
+              <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
+                {project.latitude && project.longitude && (
+                  <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(project.latitude, project.longitude)}>
+                    <Ionicons name="navigate-circle-outline" size={20} color="white" />
+                    <Text style={globalStyles.locateBtnText}>Map Direct</Text>
+                  </TouchableOpacity>
+                )}
+                {hasKml && (
+                  <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(projectId, tenderId)}>
+                    <Ionicons name="earth" size={20} color="white" />
+                    <Text style={globalStyles.locateBtnText}>View KML</Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               <View style={styles.scopeBox}>
@@ -248,9 +279,9 @@ export default function ProjectDetails() {
             </View>
 
             <Text style={styles.sectionHeader}>Personnel Details</Text>
-            {/* Swapped order: State Officer first */}
-            <ContactCard title="State Officer" name={project.state_officer} designation="State Representative" phone={project.state_officer_contact} email={project.state_officer_email} onCopy={copyToClipboard} />
-            <ContactCard title="IRMA Personnel" name={project.irma_personnel} designation={project.designation} phone={project.contact_number} email={project.email} onCopy={copyToClipboard} />
+            {/* Updated mapping to pull exact keys from the database LEFT JOIN */}
+            <ContactCard title="State Officer" name={project.state_officer} designation="State Representative" phone={project.so_contact} email={project.so_email} onCopy={copyToClipboard} />
+            <ContactCard title="IRMA Personnel" name={project.irma_personnel} designation={project.designation} phone={project.contact} email={project.email} onCopy={copyToClipboard} />
           </View>
         )}
 
@@ -260,7 +291,7 @@ export default function ProjectDetails() {
 
             <Text style={[styles.sectionHeader, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
             {latestObs.length === 0 && prevObs.length === 0 ? (
-              <View style={styles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist for this project code.</Text></View>
+              <View style={globalStyles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist for this project code.</Text></View>
             ) : (
               <View>
                 {latestObs.length > 0 && (
@@ -375,9 +406,8 @@ const ObservationCard = ({ obs }: { obs: any }) => {
   );
 };
 
+// Removed redundant local styles (container, card) that are now handled by globalStyles
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
-  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' },
   errorText: { fontSize: 18, color: '#EF4444', fontWeight: 'bold' },
   goBackBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8, minWidth: 200, alignItems: 'center', marginTop: 10 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFF', paddingTop: 60, paddingBottom: 15, paddingHorizontal: 15 },
@@ -394,7 +424,6 @@ const styles = StyleSheet.create({
   sectionHeader: { fontSize: 16, fontWeight: '900', color: '#0F172A', marginBottom: 12, marginTop: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   sectionHeaderRow: { marginBottom: 5 },
   
-  card: { backgroundColor: '#FFF', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   projectTypeTag: { fontSize: 12, color: '#2563EB', marginBottom: 6, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'center' },
   projectTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', marginBottom: 15, lineHeight: 24, textAlign: 'center' },
   dataGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },

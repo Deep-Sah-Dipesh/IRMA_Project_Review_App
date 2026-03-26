@@ -2,7 +2,11 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router'; // Added useFocusEffect for live KML updates
+
+// --- NEW IMPORTS: Global styles and location helpers ---
+import { globalStyles } from '../../styles/globalStyles';
+import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 
 interface Tender {
   project_id: string;
@@ -13,10 +17,14 @@ interface Tender {
   district: string;
   ulb: string;
   physical_progress: string;
+  // Added optional params for the joined location data
+  latitude?: string;
+  longitude?: string;
 }
 
-const TenderCard = React.memo(({ item, onPress }: { item: Tender, onPress: () => void }) => (
-  <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={onPress}>
+const TenderCard = React.memo(({ item, onPress, hasKml }: { item: Tender, onPress: () => void, hasKml: boolean }) => (
+  // Using globalStyles.card for consistent UI
+  <TouchableOpacity style={globalStyles.card} activeOpacity={0.7} onPress={onPress}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
       <Text style={styles.cardId}>{item.project_id}</Text>
       <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
@@ -32,6 +40,22 @@ const TenderCard = React.memo(({ item, onPress }: { item: Tender, onPress: () =>
         <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
       </View>
     </View>
+
+    {/* --- NEW: Locate & KML Buttons inline below location --- */}
+    <View style={globalStyles.btnRow}>
+      {item.latitude && item.longitude && (
+        <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(item.latitude!, item.longitude!)}>
+          <Ionicons name="map-outline" size={16} color="white" />
+          <Text style={globalStyles.locateBtnText}>Locate</Text>
+        </TouchableOpacity>
+      )}
+      {hasKml && (
+        <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(item.project_id, item.tender_id)}>
+          <Ionicons name="earth" size={16} color="white" />
+          <Text style={globalStyles.locateBtnText}>KML</Text>
+        </TouchableOpacity>
+      )}
+    </View>
   </TouchableOpacity>
 ));
 
@@ -41,6 +65,7 @@ export default function ProjectsTab() {
   
   const [loading, setLoading] = useState(true);
   const [tenders, setTenders] = useState<Tender[]>([]);
+  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set()); // Tracks projects with KMLs
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
@@ -59,18 +84,42 @@ export default function ProjectsTab() {
   const flatListRef = useRef<FlatList>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
-  useEffect(() => { loadTenders(); }, []);
+  // --- NEW: useFocusEffect updates data when tab is opened (catches newly generated KMLs) ---
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      loadTenders(isMounted);
+      checkLocalKmls(isMounted);
+      return () => { isMounted = false; };
+    }, [])
+  );
 
-  const loadTenders = async () => {
+  const checkLocalKmls = async (isMounted: boolean) => {
+    const kmls = await getProjectsWithLocalKmls();
+    if (isMounted) setKmlProjects(kmls);
+  };
+
+  const loadTenders = async (isMounted: boolean) => {
     try {
       setLoading(true);
-      const data = await db.getAllAsync<Tender>("SELECT * FROM tenders");
-      setTenders(data || []);
+      // --- NEW: JOIN with project_details to grab latitude and longitude instantly ---
+      const data = await db.getAllAsync<Tender>(`
+        SELECT t.*, pd.latitude, pd.longitude 
+        FROM tenders t
+        LEFT JOIN project_details pd ON t.project_id = pd.project_id
+      `);
+      if (isMounted) setTenders(data || []);
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (isMounted) setLoading(false);
     }
+  };
+
+  const getFolderName = (pId: string, tId: string) => {
+    const safeId = String(pId).replace(/[\/\\]/g, '-');
+    const safeTender = String(tId || 'NoTender').replace(/[\/\\]/g, '-');
+    return `${safeId}_${safeTender}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   };
 
   const uniqueStates = ['All States', ...[...new Set(tenders.map(t => t.state).filter(Boolean))].sort()];
@@ -156,19 +205,20 @@ export default function ProjectsTab() {
   const renderItem = useCallback(({ item }: { item: Tender }) => (
     <TenderCard 
       item={item} 
+      hasKml={kmlProjects.has(getFolderName(item.project_id, item.tender_id))}
       onPress={() => {
-        // CRITICAL FIX: Using Object routing guarantees safe parameter passing and prevents "undefined" ghost folders
+        // CRITICAL FIX: Using Object routing guarantees safe parameter passing
         router.push({
           pathname: '/project/[id]',
           params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' }
         });
       }} 
     />
-  ), [router]);
+  ), [router, kmlProjects]);
 
   if (loading) {
     return (
-      <View style={styles.centerLoading}>
+      <View style={globalStyles.centerContainer}>
         <ActivityIndicator size="large" color="#2563EB" />
         <Text style={{ marginTop: 10 }}>Accessing Local Database...</Text>
       </View>
@@ -176,7 +226,7 @@ export default function ProjectsTab() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={globalStyles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <Text style={styles.title}>All Projects</Text>
@@ -254,7 +304,7 @@ export default function ProjectsTab() {
       />
 
       {showScrollTop && (
-        <TouchableOpacity style={styles.fab} onPress={() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true })}>
+        <TouchableOpacity style={globalStyles.fab} onPress={() => flatListRef.current?.scrollToOffset({ offset: 0, animated: true })}>
           <Ionicons name="arrow-up" size={24} color="#FFF" />
         </TouchableOpacity>
       )}
@@ -304,9 +354,8 @@ function FilterChip({ label, value, onPress, disabled }: any) {
   );
 }
 
+// Retained local styles for specific UI elements that aren't globally matched
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
-  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF' },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
@@ -320,7 +369,6 @@ const styles = StyleSheet.create({
   filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#BFDBFE' },
   filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
-  card: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
   progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },
   cardType: { fontSize: 12, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -330,7 +378,6 @@ const styles = StyleSheet.create({
   cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', lineHeight: 16 },
   tenderId: { fontSize: 12, color: '#94A3B8', lineHeight: 16, fontWeight: '500' },
   emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8' },
-  fab: { position: 'absolute', bottom: 30, right: 20, backgroundColor: '#2563EB', width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },

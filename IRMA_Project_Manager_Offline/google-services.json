@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "259388218274",
+    "project_id": "irma-project-manager-offline",
+    "storage_bucket": "irma-project-manager-offline.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:259388218274:android:1068b3a2a5db9a736ef0fb",
+        "android_client_info": {
+          "package_name": "com.deepsah.irmaprojectmanager"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAXfjihKQF6cv8JukK8lrwbNvanNuZK7Ks"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

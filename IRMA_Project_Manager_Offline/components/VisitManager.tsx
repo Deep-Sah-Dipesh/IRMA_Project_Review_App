@@ -13,6 +13,9 @@ import { useAudioPlayer } from 'expo-audio';
 import { Audio } from 'expo-av';
 import ViewShot from 'react-native-view-shot';
 
+// --- NEW IMPORTS: Global styling ---
+import { globalStyles } from '../styles/globalStyles';
+
 // PASTE YOUR API KEY HERE TO REMOVE WATERMARK
 const GOOGLE_MAPS_API_KEY = "AIzaSyBJ_t7XtFa0vKHr9iDXFX8fcHvk9OGC_ec"; 
 
@@ -76,14 +79,14 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const sessionGeoDataRef = useRef<any>(null);
   const [liveGeoData, setLiveGeoData] = useState<any>(null);
   
-  // BACKGROUND RENDERING ENGINE
+  // Background queue for rendering high-res ViewShots without freezing the UI
   const [captureQueue, setCaptureQueue] = useState<any[]>([]);
   const [captureTrigger, setCaptureTrigger] = useState(0);
   const viewShotRef = useRef<ViewShot>(null);
 
   const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${folderName}/`;
   
-  // DYNAMIC CAMERA RESOLUTIONS
+  // Dynamic camera resolution scaling
   const CAMERA_HEIGHT = aspectRatio === '4:3' ? SCREEN_WIDTH * (4 / 3) : SCREEN_WIDTH * (16 / 9);
   const HIDDEN_WIDTH = 1080;
   const HIDDEN_HEIGHT = aspectRatio === '4:3' ? 1440 : 1920;
@@ -91,6 +94,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   useEffect(() => { scanExistingVisits(); }, [folderName]);
   useEffect(() => { if (activeVisit) updateFileStats(); }, [activeVisit]);
 
+  // Audio recording timer lifecycle
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (recording && !isRecordingPaused) {
@@ -106,6 +110,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
 
   useEffect(() => { return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); }; }, [recording]);
 
+  // Background live GPS tracking and reverse geocoding
   useEffect(() => {
     let sub: Location.LocationSubscription;
     (async () => {
@@ -126,7 +131,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     return () => { if (sub) sub.remove(); }
   }, []);
 
-  // Guarantee image load before snapping ViewShot
+  // ViewShot Engine: Processes the hidden queue to stamp metadata onto images
   useEffect(() => {
     if (captureTrigger > 0 && captureQueue.length > 0 && viewShotRef.current) {
       setTimeout(async () => {
@@ -235,6 +240,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     } catch (err) {}
   };
 
+  // Smart Markdown Injector for text comments
   const injectMarkdown = (type: 'bullet' | 'number' | 'roman') => {
     setCommentText(prev => {
       const lines = prev.split('\n');
@@ -336,6 +342,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     } catch (e) {}
   };
 
+  // Generates and manages the local KML file for Google Earth exports
   const handlePinGeotag = async (silent = false, isAuto = false) => {
     const doGeotag = async (replace = false) => {
       try {
@@ -471,7 +478,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   }, [savedFiles, filterType, sortBy, sortOrder]);
 
   return (
-    <View style={styles.visitContainer}>
+    <View style={[globalStyles.card, { padding: 16, marginBottom: 10 }]}>
       <View style={{ marginBottom: 15 }}>
          <Text style={styles.visitSectionHeader}>Manage your visit reports here</Text>
          <View style={styles.visitControls}>
@@ -543,7 +550,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </View>
       </View>
 
-      {/* LIVE CAMERA */}
+      {/* LIVE CAMERA MODAL */}
       <Modal visible={showLiveCamera} transparent animationType="none">
          <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center' }}>
             <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, backgroundColor: '#111', overflow: 'hidden' }}>
@@ -626,6 +633,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </View>
       )}
 
+      {/* VISITS MODAL */}
       <Modal visible={showVisitModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowVisitModal(false)}>
           <View style={styles.modalOverlay}>
@@ -648,6 +656,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </TouchableWithoutFeedback>
       </Modal>
 
+      {/* TEXT COMMENT MODAL */}
       <Modal visible={showCommentModal} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F1F5F9' }]}>
           <View style={[styles.modalContent, { paddingBottom: 30, backgroundColor: '#F1F5F9', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 40 }]}>
@@ -661,13 +670,20 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
                  <TouchableOpacity style={styles.toolbarBtn} onPress={() => injectMarkdown('number')}><Ionicons name="list-circle" size={16} color="#2563EB" /><Text style={styles.toolbarBtnText}>Numbers</Text></TouchableOpacity>
                  <TouchableOpacity style={styles.toolbarBtn} onPress={() => injectMarkdown('roman')}><Text style={styles.toolbarBtnText}>Roman</Text></TouchableOpacity>
               </ScrollView>
-              <TextInput ref={commentInputRef} style={styles.commentInput} multiline placeholder="Write observation..." value={commentText} onChangeText={setCommentText} autoFocus />
-              <TouchableOpacity style={styles.saveCommentBtn} onPress={handleSaveComment}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Save Comment</Text></TouchableOpacity>
+              
+              {/* Used globalStyles.input for consistency */}
+              <TextInput ref={commentInputRef} style={[globalStyles.input, { height: 120, textAlignVertical: 'top' }]} multiline placeholder="Write observation..." value={commentText} onChangeText={setCommentText} autoFocus />
+              
+              {/* Used globalStyles.primaryBtn */}
+              <TouchableOpacity style={globalStyles.primaryBtn} onPress={handleSaveComment}>
+                <Text style={globalStyles.primaryBtnText}>Save Comment</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* FILES EXPLORER MODAL */}
       <Modal visible={showFilesModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowFilesModal(false)}>
           <View style={styles.modalOverlay}>
@@ -713,6 +729,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         </TouchableWithoutFeedback>
       </Modal>
 
+      {/* FILE PREVIEW MODAL */}
       <Modal visible={!!previewFile} transparent animationType="slide">
         <View style={styles.previewOverlay}>
           <View style={styles.previewHeader}>
@@ -801,7 +818,6 @@ const ActionButton = ({ icon, label, color, disabled, onPress, style }: any) => 
 );
 
 const styles = StyleSheet.create({
-  visitContainer: { backgroundColor: '#FFF', padding: 16, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#E2E8F0' },
   visitSectionHeader: { fontSize: 13, fontWeight: '800', color: '#475569', textAlign: 'center', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
   visitControls: { flexDirection: 'row', justifyContent: 'space-between' },
   visitBtnLight: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flex: 1, marginRight: 10 },
@@ -839,8 +855,6 @@ const styles = StyleSheet.create({
   commentToolbar: { flexDirection: 'row', marginBottom: 10 },
   toolbarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginRight: 8 },
   toolbarBtnText: { marginLeft: 4, fontWeight: 'bold', color: '#334155', fontSize: 12 },
-  commentInput: { backgroundColor: '#FFF', padding: 15, borderRadius: 10, height: 120, textAlignVertical: 'top', fontSize: 15, borderWidth: 1, borderColor: '#E2E8F0' },
-  saveCommentBtn: { backgroundColor: '#059669', padding: 15, borderRadius: 10, alignItems: 'center', marginTop: 15 },
   
   filterControls: { flexDirection: 'row', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#E2E8F0' },
   controlChip: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#EFF6FF', borderRadius: 16, marginRight: 8, borderWidth: 1, borderColor: '#BFDBFE', justifyContent: 'center' },

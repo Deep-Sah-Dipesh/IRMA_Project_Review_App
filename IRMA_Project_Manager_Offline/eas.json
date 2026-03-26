@@ -6,6 +6,7 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "channel": "devevelopment",
       "android": {
         "buildType": "apk"
       }

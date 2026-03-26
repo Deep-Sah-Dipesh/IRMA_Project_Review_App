@@ -7,6 +7,8 @@ import { zip } from 'react-native-zip-archive';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
+import { globalStyles } from '../../styles/globalStyles';
+import { shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -23,6 +25,9 @@ export default function DashboardTab() {
   const [loading, setLoading] = useState(true);
   const [recentProjects, setRecentProjects] = useState<any[]>([]);
   
+  // NEW: State to track which folders contain KML files
+  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
+  
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'Date' | 'Project ID' | 'Tender ID'>('Date');
@@ -37,6 +42,7 @@ export default function DashboardTab() {
 
   const sortOptions = ['Date', 'Project ID', 'Tender ID'];
 
+  // Refresh data every time the tab gains focus
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -79,6 +85,10 @@ export default function DashboardTab() {
   const loadRecentProjects = async (isMounted: boolean) => {
     setLoading(true);
     try {
+      // Fetch KML presence locally alongside project loads
+      const kmls = await getProjectsWithLocalKmls();
+      if (isMounted) setKmlProjects(kmls);
+
       const baseUri = `${FileSystem.documentDirectory}projects/`;
       const dirInfo = await FileSystem.getInfoAsync(baseUri);
       if (!dirInfo.exists) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
@@ -111,6 +121,7 @@ export default function DashboardTab() {
     }
   };
 
+  // Complex Sort/Group logic for the UI FlatList
   const processedData = useMemo(() => {
     let filtered = recentProjects.filter(p => {
       if (!search) return true;
@@ -141,6 +152,7 @@ export default function DashboardTab() {
     return recentProjects.filter(p => selectedIds.has(p.folderName)).reduce((acc, curr) => acc + curr.totalSize, 0);
   }, [selectedIds, recentProjects]);
 
+  // Checkbox interactions
   const toggleSelection = (folderName: string) => {
     const newSet = new Set(selectedIds);
     if (newSet.has(folderName)) newSet.delete(folderName);
@@ -221,7 +233,6 @@ export default function DashboardTab() {
            setBulkExportStatus(status);
         });
         
-        // Note safely restored
         await Share.share({ message: `Multi-Project Export (${selectedIds.size} Projects):\n${expectedUrl}\n\nNote: The link might not be fully ready until the files are uploaded completely by the sender.` });
         
         startBackgroundUpload().finally(async () => {
@@ -249,6 +260,7 @@ export default function DashboardTab() {
   };
 
   const renderItem = ({ item }: { item: any }) => {
+    // Render Header (Grouped by Date)
     if (item.isHeader) {
        const [yyyy, mm, dd] = item.date.split('-');
        const dObj = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
@@ -268,10 +280,11 @@ export default function DashboardTab() {
     }
 
     const isSelected = selectedIds.has(item.folderName);
+    const hasKml = kmlProjects.has(item.folderName);
 
     return (
       <TouchableOpacity 
-        style={[styles.card, isSelectionMode && isSelected && styles.cardSelected]} 
+        style={[globalStyles.card, isSelectionMode && isSelected && styles.cardSelected]} 
         activeOpacity={0.7} 
         onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.folderName); }}
         onPress={() => {
@@ -283,17 +296,40 @@ export default function DashboardTab() {
           {isSelectionMode && <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={22} color={isSelected ? "#2563EB" : "#94A3B8"} style={{marginRight: 10}} />}
           <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
             <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
-            <Text style={styles.cardId}>{item.project_id}</Text>
+            <Text style={globalStyles.cardTitle}>{item.project_id}</Text>
           </View>
         </View>
-        <Text style={styles.cardTitle}>{item.project_title}</Text>
-        <View style={styles.cardMetaRow}>
-          <Ionicons name="location-outline" size={14} color="#64748B" />
-          <Text style={styles.cardMeta}>{item.ulb}, {item.state}</Text>
-        </View>
-        <View style={styles.dovContainer}>
+
+        <Text style={[globalStyles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>
+        
+        {/* DOV Swapped Up */}
+        <View style={[styles.dovContainer, { marginBottom: 12 }]}>
           <Ionicons name="calendar" size={12} color="#059669" style={{marginRight: 4}} />
-          <Text style={styles.dovText}>DOV: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}</Text>
+          <Text style={styles.dovText}>Visited: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}</Text>
+        </View>
+
+        {/* Location/Tender info row & Green KML Button */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderColor: '#F1F5F9', paddingTop: 10 }}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+              <Ionicons name="location-outline" size={14} color="#64748B" />
+              <Text style={globalStyles.textMuted} numberOfLines={1}> {item.ulb}, {item.state}</Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Ionicons name="document-text-outline" size={14} color="#64748B" />
+              <Text style={globalStyles.textMuted} numberOfLines={1}> Tender: {item.tender_id || 'N/A'}</Text>
+            </View>
+          </View>
+
+          {hasKml && (
+             <TouchableOpacity 
+               style={[globalStyles.locateGreenBtn, { flex: 0, paddingHorizontal: 12, paddingVertical: 8 }]} 
+               onPress={() => shareLocalKml(item.project_id, item.tender_id)}
+             >
+               <Ionicons name="earth" size={16} color="white" />
+               <Text style={globalStyles.locateBtnText}>KML</Text>
+             </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -302,7 +338,7 @@ export default function DashboardTab() {
   if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Scanning local workspace...</Text></View>;
 
   return (
-    <View style={styles.container}>
+    <View style={globalStyles.container}>
       <View style={styles.header}>
         {/* ROW 1: Titles & Select Button aligned to Top Right */}
         <View style={styles.headerRow}>
@@ -425,7 +461,6 @@ export default function DashboardTab() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
   centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF', borderBottomWidth: 1, borderColor: '#E2E8F0' },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -445,13 +480,9 @@ const styles = StyleSheet.create({
   dateHeader: { alignItems: 'center' },
   dateHeaderText: { backgroundColor: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 'bold', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' },
   
-  card: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   cardSelected: { borderColor: '#2563EB', backgroundColor: '#EFF6FF', borderWidth: 2 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  cardId: { color: '#1E293B', fontWeight: 'bold', fontSize: 14 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#334155', marginBottom: 6 },
-  cardMetaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', marginLeft: 4 },
+  
   dovContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   dovText: { color: '#065F46', fontSize: 11, fontWeight: 'bold' },
   

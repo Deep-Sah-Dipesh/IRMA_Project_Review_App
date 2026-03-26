@@ -3,7 +3,11 @@
     "name": "IRMA Project Manager",
     "slug": "IRMA_Project_Manager_Offline",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
     "orientation": "portrait",
+    "owner": "deep_sah",
     "icon": "./assets/images/icon.png",
     "scheme": "irmaprojectmanageroffline",
     "userInterfaceStyle": "automatic",
@@ -21,6 +25,11 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.CAMERA",
@@ -58,7 +67,8 @@
           }
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "@react-native-firebase/app"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -69,6 +79,9 @@
       "eas": {
         "projectId": "f3bd0d84-49ee-4231-a9a9-9b26e4b4e10e"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/f3bd0d84-49ee-4231-a9a9-9b26e4b4e10e"
     }
   }
 }
