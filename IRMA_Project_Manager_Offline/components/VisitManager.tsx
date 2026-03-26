@@ -13,7 +13,6 @@ import { useAudioPlayer } from 'expo-audio';
 import { Audio } from 'expo-av';
 import ViewShot from 'react-native-view-shot';
 
-// --- NEW IMPORTS: Global styling ---
 import { globalStyles } from '../styles/globalStyles';
 
 // PASTE YOUR API KEY HERE TO REMOVE WATERMARK
@@ -142,7 +141,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
              const d = new Date(captureQueue[0].id);
              const p = (n: number) => n.toString().padStart(2, '0');
              const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-             await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}img_geo_${dtStr}.jpg` });
+             await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}Img_Geo_${dtStr}.jpg` });
              updateFileStats();
           }
         } catch (e) {} finally {
@@ -166,7 +165,51 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     } catch (e) {}
   };
 
-  const createNewVisit = async () => {
+  const getTodayYYYYMMDD = () => {
+      const d = new Date();
+      const p = (n: number) => n.toString().padStart(2, '0');
+      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  };
+
+  const checkAndCreateVisit = async () => {
+    const todayStr = getTodayYYYYMMDD();
+    
+    if (visits.length > 0) {
+        const latest = visits[visits.length - 1];
+        const match = latest.match(/_(\d{8})_/);
+        if (match) {
+            const lastDateStr = match[1];
+            if (lastDateStr === todayStr) {
+                Alert.alert("Visit Limit Reached", "You've already created a visit report today, and can't create duplicate reports on the same day.");
+                return;
+            }
+            
+            // Calculate X days ago difference
+            const d1 = new Date(parseInt(todayStr.substring(0,4)), parseInt(todayStr.substring(4,6))-1, parseInt(todayStr.substring(6,8)));
+            const d2 = new Date(parseInt(lastDateStr.substring(0,4)), parseInt(lastDateStr.substring(4,6))-1, parseInt(lastDateStr.substring(6,8)));
+            const diffDays = Math.ceil((d1.getTime() - d2.getTime()) / (1000 * 60 * 60 * 24));
+            
+            const proceed = await new Promise((resolve) => {
+                Alert.alert(
+                    "Previous Visit Found", 
+                    `You created a visit report for this project ${diffDays} days ago.\n\nAre you sure you want to create another visit report?`, [
+                    { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                    { text: "OK", onPress: () => resolve(true) }
+                ]);
+            });
+            if (!proceed) return;
+        }
+    }
+
+    Alert.alert(
+        "Site Verification", 
+        "Are you on the Project Site?\n\nIf you're away press Cancel, or if you've reached the site, Press OK to create visit reports.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "OK", onPress: () => executeCreateNewVisit() }
+    ]);
+  };
+
+  const executeCreateNewVisit = async () => {
     try {
       const baseUri = getBaseDirectory();
       const dirInfo = await FileSystem.getInfoAsync(baseUri);
@@ -174,8 +217,13 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const d = new Date(), p = (n: number) => n.toString().padStart(2, '0');
       const newVisitName = `VISIT_${visits.length + 1}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
       await FileSystem.makeDirectoryAsync(`${baseUri}${newVisitName}/`, { intermediates: true });
-      setVisits([...visits, newVisitName].sort());
+      
+      const newVisits = [...visits, newVisitName].sort();
+      setVisits(newVisits);
       setActiveVisit(newVisitName); 
+      
+      // Auto-trigger background KML generation within 1 second of folder creation
+      setTimeout(() => { handlePinGeotag(true, true, newVisitName); }, 1000);
     } catch (e) {}
   };
 
@@ -234,13 +282,16 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       if (uri) {
         const targetDir = await ensureSubfolder('notes');
         const d = new Date();
-        await FileSystem.copyAsync({ from: uri, to: `${targetDir}audio_${d.getTime()}.m4a` });
+        const p = (n: number) => n.toString().padStart(2, '0');
+        const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+        // Applied Naming Convention
+        const num = fileStats.audio + 1;
+        await FileSystem.copyAsync({ from: uri, to: `${targetDir}Voice_Memo_${num}_${dtStr}.m4a` });
         updateFileStats();
       }
     } catch (err) {}
   };
 
-  // Smart Markdown Injector for text comments
   const injectMarkdown = (type: 'bullet' | 'number' | 'roman') => {
     setCommentText(prev => {
       const lines = prev.split('\n');
@@ -272,7 +323,12 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     if (!commentText.trim()) return;
     try {
       const targetDir = await ensureSubfolder('notes');
-      await FileSystem.writeAsStringAsync(`${targetDir}comment_${Date.now()}.txt`, commentText);
+      const d = new Date();
+      const p = (n: number) => n.toString().padStart(2, '0');
+      const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+      // Applied Naming Convention
+      const num = fileStats.comments + 1;
+      await FileSystem.writeAsStringAsync(`${targetDir}Comments_${num}_${dtStr}.txt`, commentText);
       setCommentText(''); setShowCommentModal(false); updateFileStats();
     } catch (e) {}
   };
@@ -337,16 +393,23 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const targetDir = await ensureSubfolder('attachments');
       const prefix = mediaType === 'video' ? 'vid_' : 'img_';
       const ext = mediaType === 'video' ? 'mp4' : 'jpg';
-      await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}${prefix}${Date.now()}.${ext}` });
+      
+      const d = new Date();
+      const p = (n: number) => n.toString().padStart(2, '0');
+      const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      
+      await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}${prefix}${dtStr}.${ext}` });
       updateFileStats();
     } catch (e) {}
   };
 
-  // Generates and manages the local KML file for Google Earth exports
-  const handlePinGeotag = async (silent = false, isAuto = false) => {
+  const handlePinGeotag = async (silent = false, isAuto = false, targetVisit: string | null = null) => {
+    const activeDir = targetVisit || activeVisit;
+    if (!activeDir) return;
+
     const doGeotag = async (replace = false) => {
       try {
-        const visitUri = `${getBaseDirectory()}${activeVisit}/`;
+        const visitUri = `${getBaseDirectory()}${activeDir}/`;
         if (replace) {
           const files = await FileSystem.readDirectoryAsync(visitUri).catch(() => []);
           const kmlFiles = files.filter(f => f.endsWith('.kml'));
@@ -357,8 +420,12 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         if (status !== 'granted') { if (!silent) Alert.alert("Location Denied"); return; }
         
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${loc.coords.longitude},${loc.coords.latitude},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
-        await FileSystem.writeAsStringAsync(`${visitUri}pin_${Date.now()}.kml`, kmlData);
+        const lat = loc.coords.latitude.toFixed(6);
+        const lon = loc.coords.longitude.toFixed(6);
+        
+        const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${lon},${lat},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
+        // Applied Naming Convention
+        await FileSystem.writeAsStringAsync(`${visitUri}pin_${projectId}_${tenderId}_${lat}_${lon}.kml`, kmlData);
         updateFileStats();
       } catch (err) {
         if (!silent) Alert.alert("Error", "Could not fetch GPS.");
@@ -368,7 +435,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     if (isAuto) {
       doGeotag(false);
     } else {
-      const visitUri = `${getBaseDirectory()}${activeVisit}/`;
+      const visitUri = `${getBaseDirectory()}${activeDir}/`;
       const files = await FileSystem.readDirectoryAsync(visitUri).catch(() => []);
       if (files.some(f => f.endsWith('.kml'))) {
         Alert.alert("Location Pin", "Adding location pin of this place.", [
@@ -485,7 +552,8 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
            <TouchableOpacity style={styles.visitBtnLight} onPress={() => setShowVisitModal(true)}>
              <Ionicons name="list" size={16} color="#334155" style={{ marginRight: 6 }} /><Text style={{ color: '#334155', fontWeight: 'bold', fontSize: 13 }}>Select From Visits</Text>
            </TouchableOpacity>
-           <TouchableOpacity style={styles.visitBtnDark} onPress={createNewVisit}>
+           {/* REPLACED with Verification function */}
+           <TouchableOpacity style={styles.visitBtnDark} onPress={checkAndCreateVisit}>
              <Ionicons name="add-circle" size={16} color="#FFF" style={{ marginRight: 6 }} /><Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 13 }}>Create New Visit</Text>
            </TouchableOpacity>
          </View>

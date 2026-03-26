@@ -22,8 +22,9 @@ interface Tender {
   longitude?: string;
 }
 
-const TenderCard = React.memo(({ item, onPress, hasKml }: { item: Tender, onPress: () => void, hasKml: boolean }) => (
-  <TouchableOpacity style={globalStyles.card} activeOpacity={0.7} onPress={onPress}>
+const TenderCard = React.memo(({ item, onPress, hasKml, isVisited }: { item: Tender, onPress: () => void, hasKml: boolean, isVisited: boolean }) => (
+  // ADDED: isVisited triggers opacity to visually distinguish them
+  <TouchableOpacity style={[globalStyles.card, isVisited && { opacity: 0.45 }]} activeOpacity={0.7} onPress={onPress}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
       <Text style={styles.cardId}>{item.project_id}</Text>
       <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
@@ -218,24 +219,26 @@ export default function ProjectsTab() {
     Keyboard.dismiss();
   };
 
-  const renderItem = useCallback(({ item }: { item: Tender }) => (
-    <TenderCard 
-      item={item} 
-      hasKml={kmlProjects.has(getFolderName(item.project_id, item.tender_id))}
-      onPress={() => {
-        const fName = getFolderName(item.project_id, item.tender_id);
-        if (visitedProjects.has(fName)) {
-          Alert.alert("Project Visited", "You have already created visit reports on this project. To view the details, you need to go to the Dashboard section.");
-          return;
-        }
-        
-        router.push({
-          pathname: '/project/[id]',
-          params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' }
-        });
-      }} 
-    />
-  ), [router, kmlProjects, visitedProjects]);
+  const renderItem = useCallback(({ item }: { item: Tender }) => {
+    const fName = getFolderName(item.project_id, item.tender_id);
+    const isVisited = visitedProjects.has(fName);
+
+    return (
+      <TenderCard 
+        item={item} 
+        hasKml={kmlProjects.has(fName)}
+        isVisited={isVisited}
+        onPress={() => {
+          if (isVisited) {
+            Alert.alert("Project Visited", "You have already created visit reports on this project. To view the details, you need to go to the Dashboard section.");
+            return;
+          }
+          
+          router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
+        }} 
+      />
+    );
+  }, [router, kmlProjects, visitedProjects]);
 
   if (loading) {
     return (

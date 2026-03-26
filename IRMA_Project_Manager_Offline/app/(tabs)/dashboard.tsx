@@ -28,7 +28,7 @@ export default function DashboardTab() {
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<'Date' | 'Project ID' | 'Tender ID'>('Date');
+  const [sortBy, setSortBy] = useState<'Date-Time' | 'Project ID' | 'Tender ID'>('Date');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [activeModal, setActiveModal] = useState<{type: 'sort', options: string[], title: string} | null>(null);
@@ -38,7 +38,7 @@ export default function DashboardTab() {
   const [isProcessingAction, setIsProcessingAction] = useState(false);
   const [bulkExportStatus, setBulkExportStatus] = useState('');
 
-  const sortOptions = ['Date', 'Project ID', 'Tender ID'];
+  const sortOptions = ['Date-Time', 'Project ID', 'Tender ID'];
 
   useFocusEffect(
     useCallback(() => {
@@ -53,7 +53,6 @@ export default function DashboardTab() {
     const dates: string[] = [];
     const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
     
-    // Tally media stats for the summary header
     let mediaStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
     
     const traverse = async (currentPath: string, parentDir: string = '') => {
@@ -144,7 +143,14 @@ export default function DashboardTab() {
 
     if (sortBy === 'Project ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.project_id.localeCompare(b.project_id) : b.project_id.localeCompare(a.project_id));
     else if (sortBy === 'Tender ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.tender_id.localeCompare(b.tender_id) : b.tender_id.localeCompare(a.tender_id));
-    else filtered.sort((a, b) => sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate));
+    else if (sortBy === 'Date') {
+      // Primary Sort: Date (YYYY-MM-DD), Secondary Sort: Exact Time (maxModTime)
+      filtered.sort((a, b) => {
+        const dateCmp = sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate);
+        if (dateCmp !== 0) return dateCmp;
+        return sortOrder === 'asc' ? a.maxModTime - b.maxModTime : b.maxModTime - a.maxModTime;
+      });
+    }
 
     if (sortBy === 'Date') {
       const grouped: any[] = [];
@@ -315,13 +321,13 @@ export default function DashboardTab() {
            </View>
            
            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginLeft: 10, flex: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 10 }}>
-              {item.stats.geo > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📍 {item.stats.geo} Geo</Text>}
-              {item.stats.photos > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📸 {item.stats.photos} img</Text>}
-              {item.stats.vids > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📹 {item.stats.vids} vid</Text>}
-              {item.stats.text > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📝 {item.stats.text} notes</Text>}
-              {item.stats.audio > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🎙️ {item.stats.audio} aud</Text>}
+              {item.stats.geo > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📍 {item.stats.geo} GeoTagIMG</Text>}
+              {item.stats.photos > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📸 {item.stats.photos} Image</Text>}
+              {item.stats.vids > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📹 {item.stats.vids} Videos</Text>}
+              {item.stats.text > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📝 {item.stats.text} Notes</Text>}
+              {item.stats.audio > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🎙️ {item.stats.audio} Voice</Text>}
               {item.stats.kmls > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🌍 {item.stats.kmls} KML</Text>}
-              {item.stats.docs > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📎 {item.stats.docs} docs</Text>}
+              {item.stats.docs > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📎 {item.stats.docs} Docs</Text>}
            </ScrollView>
          </View>
        );
@@ -330,6 +336,9 @@ export default function DashboardTab() {
     const isSelected = selectedIds.has(item.folderName);
     const hasKml = kmlProjects.has(item.folderName);
 
+    // Generate accurate time string from maxModTime
+    const exactTime = new Date(item.maxModTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     return (
       <TouchableOpacity 
         style={[globalStyles.card, isSelectionMode && isSelected && styles.cardSelected]} 
@@ -337,7 +346,7 @@ export default function DashboardTab() {
         onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.folderName); }}
         onPress={() => {
           if (isSelectionMode) toggleSelection(item.folderName);
-          else router.push({ pathname: '/project/[id]', params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' } });
+          else router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
         }}
       >
         <View style={styles.cardHeader}>
@@ -346,6 +355,7 @@ export default function DashboardTab() {
             <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
             <Text style={globalStyles.cardTitle}>{item.project_id}</Text>
           </View>
+          <Text style={{fontSize: 11, color: '#94A3B8', fontWeight: 'bold'}}>{exactTime}</Text>
         </View>
 
         <Text style={[globalStyles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>

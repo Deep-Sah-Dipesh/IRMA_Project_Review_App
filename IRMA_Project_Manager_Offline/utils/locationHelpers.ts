@@ -1,4 +1,3 @@
-// Fix: Prevent the same crash on KML scanning by using legacy API
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Linking from 'expo-linking';
 import { Alert } from 'react-native';
@@ -9,10 +8,7 @@ export const openGoogleMaps = (lat: string, lng: string) => {
     return;
   }
   const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-  Linking.openURL(url).catch(err => {
-    console.error("Failed to open maps", err);
-    Alert.alert("Error", "Could not open the mapping application.");
-  });
+  Linking.openURL(url).catch(() => Alert.alert("Error", "Could not open the mapping application."));
 };
 
 export const shareLocalKml = async (projectId: string, tenderId: string) => {
@@ -20,20 +16,29 @@ export const shareLocalKml = async (projectId: string, tenderId: string) => {
     const safeId = String(projectId).replace(/[\/\\]/g, '-');
     const safeTender = String(tenderId || 'NoTender').replace(/[\/\\]/g, '-');
     const folderName = `${safeId}_${safeTender}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const dir = FileSystem.documentDirectory + folderName + '/';
+    const projDir = FileSystem.documentDirectory + 'projects/' + folderName + '/';
     
-    const dirInfo = await FileSystem.getInfoAsync(dir);
-    if (!dirInfo.exists) {
-        Alert.alert("Not Found", "No local Visit Report found for this project.");
-        return;
-    }
+    const dirInfo = await FileSystem.getInfoAsync(projDir);
+    if (!dirInfo.exists) return Alert.alert("Not Found", "No local Visit Report found.");
 
-    const files = await FileSystem.readDirectoryAsync(dir);
-    const kmlFile = files.find(f => f.toLowerCase().endsWith('.kml'));
+    // Deep scan inside VISIT_ folders to find the actual KML file
+    const visits = await FileSystem.readDirectoryAsync(projDir);
+    let targetKmlUri = '';
+
+    for (const v of visits.sort().reverse()) {
+        if (v.startsWith('VISIT_')) {
+            const visitPath = projDir + v + '/';
+            const files = await FileSystem.readDirectoryAsync(visitPath);
+            const kmlFile = files.find(f => f.toLowerCase().endsWith('.kml'));
+            if (kmlFile) {
+                targetKmlUri = visitPath + kmlFile;
+                break;
+            }
+        }
+    }
     
-    if (kmlFile) {
-        const uri = dir + kmlFile;
-        const content = await FileSystem.readAsStringAsync(uri);
+    if (targetKmlUri) {
+        const content = await FileSystem.readAsStringAsync(targetKmlUri);
         const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
         
         if (coordMatch) {
@@ -46,7 +51,6 @@ export const shareLocalKml = async (projectId: string, tenderId: string) => {
         Alert.alert("Not Found", "No KML file was generated in this Visit Report.");
     }
   } catch (error) {
-    console.error("Error opening KML:", error);
     Alert.alert("Error", "Could not process local files.");
   }
 };
@@ -54,21 +58,25 @@ export const shareLocalKml = async (projectId: string, tenderId: string) => {
 export const getProjectsWithLocalKmls = async (): Promise<Set<string>> => {
     const kmlSet = new Set<string>();
     try {
-        const baseDir = FileSystem.documentDirectory;
-        if (!baseDir) return kmlSet;
-        const folders = await FileSystem.readDirectoryAsync(baseDir);
+        const baseDir = FileSystem.documentDirectory + 'projects/';
+        const folders = await FileSystem.readDirectoryAsync(baseDir).catch(()=>[]);
         
         for (const folder of folders) {
-            if (folder === 'SQLite') continue;
-            const folderPath = baseDir + folder + '/';
-            const info = await FileSystem.getInfoAsync(folderPath);
+            const projDir = baseDir + folder + '/';
+            const info = await FileSystem.getInfoAsync(projDir);
             if (info.isDirectory) {
-                const files = await FileSystem.readDirectoryAsync(folderPath);
-                if (files.some(f => f.toLowerCase().endsWith('.kml'))) {
-                    kmlSet.add(folder); 
+                const visits = await FileSystem.readDirectoryAsync(projDir);
+                for (const v of visits) {
+                    if (v.startsWith('VISIT_')) {
+                        const files = await FileSystem.readDirectoryAsync(projDir + v + '/');
+                        if (files.some(f => f.toLowerCase().endsWith('.kml'))) {
+                            kmlSet.add(folder); 
+                            break; // Move to next project once found
+                        }
+                    }
                 }
             }
         }
-    } catch(e) { console.error("Error scanning KMLs:", e); }
+    } catch(e) {}
     return kmlSet;
 }

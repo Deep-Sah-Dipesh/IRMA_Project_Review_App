@@ -11,11 +11,9 @@ import { Ionicons } from '@expo/vector-icons';
 import VisitManager from '../../components/VisitManager';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 
-// --- NEW IMPORTS: Global styles and location helpers ---
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
-import { useUserStore } from '../../store/userStore'; // Import Planner Store
-import { TextInput, Modal } from 'react-native';
+import { useUserStore } from '../../store/userStore'; 
 
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
@@ -39,15 +37,20 @@ export default function ProjectDetails() {
   const router = useRouter();
   const db = SQLite.useSQLiteContext();
   
-  const projectId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
-  const tenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
+  // Safely decode the URI to reconstruct slashes (e.g., IRMA/2023)
+  const rawId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
+  const rawTenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
+  
+  const projectId = decodeURIComponent(rawId);
+  const tenderId = decodeURIComponent(rawTenderId);
+  
   const sanitizedFolder = `${projectId}_${tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   
   const [activeTab, setActiveTab] = useState<'details' | 'visits'>('details');
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
-  const [hasKml, setHasKml] = useState(false); // Track if a KML file exists locally
+  const [hasKml, setHasKml] = useState(false);
   
   const [latestObs, setLatestObs] = useState<any[]>([]);
   const [prevObs, setPrevObs] = useState<any[]>([]);
@@ -55,20 +58,16 @@ export default function ProjectDetails() {
   const [isScopeExpanded, setIsScopeExpanded] = useState(false);
   const [hasEdited, setHasEdited] = useState(false);
 
-  // New Planner Modal State
   const store = useUserStore();
-  const [showPlannerModal, setShowPlannerModal] = useState(false);
-  const [customScheduleDate, setCustomScheduleDate] = useState('');
-
+  
   const [exportState, setExportState] = useState<{ active: boolean, status: string, isCancellable: boolean }>({ active: false, status: '', isCancellable: false });
   const isExportingRef = useRef(false);
 
   const loadData = useCallback(() => {
-    if (!projectId) return;
+    if (!projectId || projectId === 'UNKNOWN_PROJ') return;
     setLoading(true); setDbError(null);
     try {
       let projData;
-      // Updated queries to LEFT JOIN with project_details to capture latitude, longitude, and personnel info
       if (tenderId && tenderId !== 'UNKNOWN_TENDER' && tenderId.trim() !== '') {
         projData = db.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? AND t.tender_id = ? LIMIT 1`, [projectId, tenderId]);
       }
@@ -97,7 +96,6 @@ export default function ProjectDetails() {
     const timeout = setTimeout(() => { 
       if (isMounted) {
         loadData(); 
-        // Scan for KML file right after loading DB records
         getProjectsWithLocalKmls().then(kmls => {
           if (isMounted) setHasKml(kmls.has(sanitizedFolder));
         });
@@ -106,7 +104,8 @@ export default function ProjectDetails() {
     return () => { isMounted = false; clearTimeout(timeout); };
   }, [loadData, projectId, sanitizedFolder]);
 
-  const handleBackNavigation = () => hasEdited ? router.replace('/(tabs)/dashboard') : router.back();
+  // FIXED: Exclusively use router.back() to prevent native stack corruption
+  const handleBackNavigation = () => router.back();
 
   const getDirectoryMetadata = async (folderPath: string) => {
     let totalFiles = 0, totalSize = 0, maxModTime = 0;
@@ -197,6 +196,17 @@ export default function ProjectDetails() {
     Alert.alert("Copied", `${label} details copied to clipboard.`);
   };
 
+  const handleAddToPlanner = () => {
+    store.addPlannerItem({
+      id: `${project.project_id}_${project.tender_id}`,
+      projectId: project.project_id,
+      tenderId: project.tender_id,
+      title: project.project_title,
+      ulb: project.ulb
+    });
+    Alert.alert("Added to Planner", `Project added to Visits Pending list.`);
+  };
+
   if (loading) return <View style={globalStyles.centerContainer}><ActivityIndicator size="large" color="#2563EB" /><Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text></View>;
   
   if (dbError || !project) return (
@@ -209,19 +219,8 @@ export default function ProjectDetails() {
   );
 
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
-
-  const handleAddToPlanner = (date: string) => {
-    store.addPlannerItem({
-      id: `${project.project_id}_${project.tender_id}`,
-      projectId: project.project_id,
-      tenderId: project.tender_id,
-      title: project.project_title,
-      ulb: project.ulb,
-      date
-    });
-    Alert.alert("Added to Planner", `Project scheduled for ${date}.`);
-    setShowPlannerModal(false);
-  };
+  const isAlreadyPlanned = store.plannerItems.some(i => i.id === `${project.project_id}_${project.tender_id}`);
+  const hasVisited = latestObs.length > 0 || prevObs.length > 0 || hasEdited || hasKml;
 
   return (
     <View style={globalStyles.container}>
@@ -232,10 +231,11 @@ export default function ProjectDetails() {
           <Text style={styles.headerSub}>{project.ulb}, {project.state}</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {/* NEW PLUS BUTTON FOR PLANNER */}
-          <TouchableOpacity onPress={() => setShowPlannerModal(true)} style={[styles.backBtn, { marginRight: 10 }]}>
-            <Ionicons name="add-circle" size={26} color="#10B981" />
-          </TouchableOpacity>
+          {(!isAlreadyPlanned && !hasVisited) && (
+            <TouchableOpacity onPress={handleAddToPlanner} style={[styles.backBtn, { marginRight: 10 }]}>
+              <Ionicons name="add-circle" size={26} color="#10B981" />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={handleShareOptions} style={styles.backBtn}>
             <Ionicons name="share-social" size={24} color="#2563EB" />
           </TouchableOpacity>
@@ -277,7 +277,7 @@ export default function ProjectDetails() {
                 <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
               </View>
 
-              {/* --- FIXED: Rigid Locate Button Layout --- */}
+              {/* Rigid Locate Button Layout */}
               <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
                 <View style={{ flex: 1, marginRight: 5 }}>
                   {project.latitude && project.longitude && (
@@ -309,7 +309,6 @@ export default function ProjectDetails() {
             </View>
 
             <Text style={styles.sectionHeader}>Personnel Details</Text>
-            {/* Updated mapping to pull exact keys from the database LEFT JOIN */}
             <ContactCard title="State Officer" name={project.state_officer} designation="State Representative" phone={project.so_contact} email={project.so_email} onCopy={copyToClipboard} />
             <ContactCard title="IRMA Personnel" name={project.irma_personnel} designation={project.designation} phone={project.contact} email={project.email} onCopy={copyToClipboard} />
           </View>
@@ -361,31 +360,6 @@ export default function ProjectDetails() {
           </View>
         </View>
       )}
-
-      {/* PLANNER MODAL */}
-      <Modal visible={showPlannerModal} transparent animationType="fade">
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ backgroundColor: '#FFF', padding: 20, borderRadius: 12, width: '80%' }}>
-            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E293B', marginBottom: 15 }}>Planner Options</Text>
-            
-            <TouchableOpacity style={{ backgroundColor: '#F1F5F9', padding: 15, borderRadius: 8, marginBottom: 10 }} onPress={() => handleAddToPlanner('Unscheduled')}>
-              <Text style={{ color: '#2563EB', fontWeight: 'bold', textAlign: 'center' }}>Add to Planner (Unscheduled)</Text>
-            </TouchableOpacity>
-
-            <Text style={{ fontSize: 13, color: '#64748B', marginVertical: 10, textAlign: 'center' }}>- OR SCHEDULE SPECIFIC DATE -</Text>
-            
-            <TextInput style={{ backgroundColor: '#F1F5F9', padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 15, textAlign: 'center' }} placeholder="YYYY-MM-DD" value={customScheduleDate} onChangeText={setCustomScheduleDate} />
-            
-            <TouchableOpacity style={{ backgroundColor: '#10B981', padding: 15, borderRadius: 8, marginBottom: 15 }} onPress={() => { if(customScheduleDate) handleAddToPlanner(customScheduleDate); }}>
-              <Text style={{ color: '#FFF', fontWeight: 'bold', textAlign: 'center' }}>Schedule Visit</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => setShowPlannerModal(false)} style={{ padding: 10 }}>
-              <Text style={{ color: '#EF4444', fontWeight: 'bold', textAlign: 'center' }}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -461,7 +435,6 @@ const ObservationCard = ({ obs }: { obs: any }) => {
   );
 };
 
-// Removed redundant local styles (container, card) that are now handled by globalStyles
 const styles = StyleSheet.create({
   errorText: { fontSize: 18, color: '#EF4444', fontWeight: 'bold' },
   goBackBtn: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 8, minWidth: 200, alignItems: 'center', marginTop: 10 },
