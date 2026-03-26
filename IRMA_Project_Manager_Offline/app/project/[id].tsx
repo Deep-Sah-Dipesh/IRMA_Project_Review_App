@@ -14,6 +14,8 @@ import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 // --- NEW IMPORTS: Global styles and location helpers ---
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
+import { useUserStore } from '../../store/userStore'; // Import Planner Store
+import { TextInput, Modal } from 'react-native';
 
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
@@ -52,6 +54,11 @@ export default function ProjectDetails() {
   const [showAllObs, setShowAllObs] = useState(false);
   const [isScopeExpanded, setIsScopeExpanded] = useState(false);
   const [hasEdited, setHasEdited] = useState(false);
+
+  // New Planner Modal State
+  const store = useUserStore();
+  const [showPlannerModal, setShowPlannerModal] = useState(false);
+  const [customScheduleDate, setCustomScheduleDate] = useState('');
 
   const [exportState, setExportState] = useState<{ active: boolean, status: string, isCancellable: boolean }>({ active: false, status: '', isCancellable: false });
   const isExportingRef = useRef(false);
@@ -203,6 +210,19 @@ export default function ProjectDetails() {
 
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
 
+  const handleAddToPlanner = (date: string) => {
+    store.addPlannerItem({
+      id: `${project.project_id}_${project.tender_id}`,
+      projectId: project.project_id,
+      tenderId: project.tender_id,
+      title: project.project_title,
+      ulb: project.ulb,
+      date
+    });
+    Alert.alert("Added to Planner", `Project scheduled for ${date}.`);
+    setShowPlannerModal(false);
+  };
+
   return (
     <View style={globalStyles.container}>
       <View style={styles.header}>
@@ -211,9 +231,15 @@ export default function ProjectDetails() {
           <Text style={styles.headerTitle} numberOfLines={1}>{project.project_id}</Text>
           <Text style={styles.headerSub}>{project.ulb}, {project.state}</Text>
         </View>
-        <TouchableOpacity onPress={handleShareOptions} style={styles.backBtn}>
-          <Ionicons name="share-social" size={24} color="#2563EB" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {/* NEW PLUS BUTTON FOR PLANNER */}
+          <TouchableOpacity onPress={() => setShowPlannerModal(true)} style={[styles.backBtn, { marginRight: 10 }]}>
+            <Ionicons name="add-circle" size={26} color="#10B981" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleShareOptions} style={styles.backBtn}>
+            <Ionicons name="share-social" size={24} color="#2563EB" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.tabContainer}>
@@ -251,20 +277,24 @@ export default function ProjectDetails() {
                 <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
               </View>
 
-              {/* --- NEW: Locate Buttons placed exactly above Scope of Work --- */}
+              {/* --- FIXED: Rigid Locate Button Layout --- */}
               <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
-                {project.latitude && project.longitude && (
-                  <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(project.latitude, project.longitude)}>
-                    <Ionicons name="navigate-circle-outline" size={20} color="white" />
-                    <Text style={globalStyles.locateBtnText}>Map Direct</Text>
-                  </TouchableOpacity>
-                )}
-                {hasKml && (
-                  <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(projectId, tenderId)}>
-                    <Ionicons name="earth" size={20} color="white" />
-                    <Text style={globalStyles.locateBtnText}>View KML</Text>
-                  </TouchableOpacity>
-                )}
+                <View style={{ flex: 1, marginRight: 5 }}>
+                  {project.latitude && project.longitude && (
+                    <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(project.latitude, project.longitude)}>
+                      <Ionicons name="navigate-circle-outline" size={20} color="white" />
+                      <Text style={globalStyles.locateBtnText}>Map Direct</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={{ flex: 1, marginLeft: 5 }}>
+                  {hasKml && (
+                    <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(projectId, tenderId)}>
+                      <Ionicons name="earth" size={20} color="white" />
+                      <Text style={globalStyles.locateBtnText}>View KML</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
               <View style={styles.scopeBox}>
@@ -331,6 +361,31 @@ export default function ProjectDetails() {
           </View>
         </View>
       )}
+
+      {/* PLANNER MODAL */}
+      <Modal visible={showPlannerModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: '#FFF', padding: 20, borderRadius: 12, width: '80%' }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E293B', marginBottom: 15 }}>Planner Options</Text>
+            
+            <TouchableOpacity style={{ backgroundColor: '#F1F5F9', padding: 15, borderRadius: 8, marginBottom: 10 }} onPress={() => handleAddToPlanner('Unscheduled')}>
+              <Text style={{ color: '#2563EB', fontWeight: 'bold', textAlign: 'center' }}>Add to Planner (Unscheduled)</Text>
+            </TouchableOpacity>
+
+            <Text style={{ fontSize: 13, color: '#64748B', marginVertical: 10, textAlign: 'center' }}>- OR SCHEDULE SPECIFIC DATE -</Text>
+            
+            <TextInput style={{ backgroundColor: '#F1F5F9', padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 15, textAlign: 'center' }} placeholder="YYYY-MM-DD" value={customScheduleDate} onChangeText={setCustomScheduleDate} />
+            
+            <TouchableOpacity style={{ backgroundColor: '#10B981', padding: 15, borderRadius: 8, marginBottom: 15 }} onPress={() => { if(customScheduleDate) handleAddToPlanner(customScheduleDate); }}>
+              <Text style={{ color: '#FFF', fontWeight: 'bold', textAlign: 'center' }}>Schedule Visit</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setShowPlannerModal(false)} style={{ padding: 10 }}>
+              <Text style={{ color: '#EF4444', fontWeight: 'bold', textAlign: 'center' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

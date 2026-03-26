@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback, Keyboard } from 'react-native';
+import { View, Text, FlatList, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TouchableWithoutFeedback, Keyboard, Alert } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router'; // Added useFocusEffect for live KML updates
+import { useRouter, useFocusEffect } from 'expo-router';
+import * as FileSystem from 'expo-file-system/legacy';
 
-// --- NEW IMPORTS: Global styles and location helpers ---
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
+import { useUserStore } from '../../store/userStore';
 
 interface Tender {
   project_id: string;
@@ -17,13 +18,11 @@ interface Tender {
   district: string;
   ulb: string;
   physical_progress: string;
-  // Added optional params for the joined location data
   latitude?: string;
   longitude?: string;
 }
 
 const TenderCard = React.memo(({ item, onPress, hasKml }: { item: Tender, onPress: () => void, hasKml: boolean }) => (
-  // Using globalStyles.card for consistent UI
   <TouchableOpacity style={globalStyles.card} activeOpacity={0.7} onPress={onPress}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
       <Text style={styles.cardId}>{item.project_id}</Text>
@@ -41,20 +40,24 @@ const TenderCard = React.memo(({ item, onPress, hasKml }: { item: Tender, onPres
       </View>
     </View>
 
-    {/* --- NEW: Locate & KML Buttons inline below location --- */}
+    {/* Rigid Button Layout: Forces 50% width even if one button is missing */}
     <View style={globalStyles.btnRow}>
-      {item.latitude && item.longitude && (
-        <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(item.latitude!, item.longitude!)}>
-          <Ionicons name="map-outline" size={16} color="white" />
-          <Text style={globalStyles.locateBtnText}>Locate</Text>
-        </TouchableOpacity>
-      )}
-      {hasKml && (
-        <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(item.project_id, item.tender_id)}>
-          <Ionicons name="earth" size={16} color="white" />
-          <Text style={globalStyles.locateBtnText}>KML</Text>
-        </TouchableOpacity>
-      )}
+      <View style={{ flex: 1, marginRight: 5 }}>
+        {item.latitude && item.longitude && (
+          <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(item.latitude!, item.longitude!)}>
+            <Ionicons name="navigate-circle-outline" size={20} color="white" />
+            <Text style={globalStyles.locateBtnText}>Map Direct</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      <View style={{ flex: 1, marginLeft: 5 }}>
+        {hasKml && (
+          <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(item.project_id, item.tender_id)}>
+            <Ionicons name="earth" size={20} color="white" />
+            <Text style={globalStyles.locateBtnText}>View KML</Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   </TouchableOpacity>
 ));
@@ -62,15 +65,17 @@ const TenderCard = React.memo(({ item, onPress, hasKml }: { item: Tender, onPres
 export default function ProjectsTab() {
   const router = useRouter();
   const db = SQLite.useSQLiteContext();
+  const store = useUserStore();
   
   const [loading, setLoading] = useState(true);
   const [tenders, setTenders] = useState<Tender[]>([]);
-  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set()); // Tracks projects with KMLs
+  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
+  const [visitedProjects, setVisitedProjects] = useState<Set<string>>(new Set());
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
   
-  const [state, setState] = useState('');
+  const [state, setState] = useState(store.selectedState === 'All States' ? '' : store.selectedState);
   const [district, setDistrict] = useState('');
   const [ulb, setUlb] = useState('');
   const [progressFilter, setProgressFilter] = useState('');
@@ -84,25 +89,35 @@ export default function ProjectsTab() {
   const flatListRef = useRef<FlatList>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
-  // --- NEW: useFocusEffect updates data when tab is opened (catches newly generated KMLs) ---
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
+      if (store.selectedState !== 'All States') setState(store.selectedState);
+      
       loadTenders(isMounted);
-      checkLocalKmls(isMounted);
+      checkLocalWorkspace(isMounted);
       return () => { isMounted = false; };
-    }, [])
+    }, [store.selectedState])
   );
 
-  const checkLocalKmls = async (isMounted: boolean) => {
+  const checkLocalWorkspace = async (isMounted: boolean) => {
     const kmls = await getProjectsWithLocalKmls();
-    if (isMounted) setKmlProjects(kmls);
+    const visited = new Set<string>();
+    try {
+      const baseDir = FileSystem.documentDirectory + 'projects/';
+      const folders = await FileSystem.readDirectoryAsync(baseDir).catch(()=>[]);
+      for (const f of folders) visited.add(f);
+    } catch(e) {}
+    
+    if (isMounted) {
+      setKmlProjects(kmls);
+      setVisitedProjects(visited);
+    }
   };
 
   const loadTenders = async (isMounted: boolean) => {
     try {
       setLoading(true);
-      // --- NEW: JOIN with project_details to grab latitude and longitude instantly ---
       const data = await db.getAllAsync<Tender>(`
         SELECT t.*, pd.latitude, pd.longitude 
         FROM tenders t
@@ -196,7 +211,8 @@ export default function ProjectsTab() {
   };
 
   const handleResetAll = () => {
-    setState(''); setDistrict(''); setUlb(''); setSearch(''); setProgressFilter(''); setSortBy(''); setSortOrder('asc');
+    setState(store.selectedState === 'All States' ? '' : store.selectedState);
+    setDistrict(''); setUlb(''); setSearch(''); setProgressFilter(''); setSortBy(''); setSortOrder('asc');
     setIsSearchActive(false);
     filterScrollRef.current?.scrollTo({ x: 0, animated: true });
     Keyboard.dismiss();
@@ -207,14 +223,19 @@ export default function ProjectsTab() {
       item={item} 
       hasKml={kmlProjects.has(getFolderName(item.project_id, item.tender_id))}
       onPress={() => {
-        // CRITICAL FIX: Using Object routing guarantees safe parameter passing
+        const fName = getFolderName(item.project_id, item.tender_id);
+        if (visitedProjects.has(fName)) {
+          Alert.alert("Project Visited", "You have already created visit reports on this project. To view the details, you need to go to the Dashboard section.");
+          return;
+        }
+        
         router.push({
           pathname: '/project/[id]',
           params: { id: item.project_id, tender_id: item.tender_id || 'UNKNOWN' }
         });
       }} 
     />
-  ), [router, kmlProjects]);
+  ), [router, kmlProjects, visitedProjects]);
 
   if (loading) {
     return (
@@ -354,7 +375,6 @@ function FilterChip({ label, value, onPress, disabled }: any) {
   );
 }
 
-// Retained local styles for specific UI elements that aren't globally matched
 const styles = StyleSheet.create({
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF' },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

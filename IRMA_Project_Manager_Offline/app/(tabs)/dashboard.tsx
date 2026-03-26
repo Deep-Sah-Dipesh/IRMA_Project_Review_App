@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput, Keyboard, Alert, Share, Modal, TouchableWithoutFeedback } from 'react-native';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput, Keyboard, Alert, Share, Modal, TouchableWithoutFeedback, ScrollView } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -24,8 +24,6 @@ export default function DashboardTab() {
 
   const [loading, setLoading] = useState(true);
   const [recentProjects, setRecentProjects] = useState<any[]>([]);
-  
-  // NEW: State to track which folders contain KML files
   const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
   
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -42,7 +40,6 @@ export default function DashboardTab() {
 
   const sortOptions = ['Date', 'Project ID', 'Tender ID'];
 
-  // Refresh data every time the tab gains focus
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -56,11 +53,15 @@ export default function DashboardTab() {
     const dates: string[] = [];
     const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
     
-    const traverse = async (currentPath: string) => {
+    // Tally media stats for the summary header
+    let mediaStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
+    
+    const traverse = async (currentPath: string, parentDir: string = '') => {
       const files = await FileSystem.readDirectoryAsync(currentPath);
       for (const file of files) {
         const fullPath = `${currentPath}${file}`;
         const info = await FileSystem.getInfoAsync(fullPath);
+        
         if (info.isDirectory) {
           if (file.startsWith('VISIT_')) {
             const parts = file.split('_');
@@ -69,23 +70,35 @@ export default function DashboardTab() {
               if (d.length === 8) dates.push(`${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`);
             }
           }
-          await traverse(`${fullPath}/`);
+          await traverse(`${fullPath}/`, file);
         } else {
-          totalSize += info.size || 0; totalFiles++;
+          totalSize += info.size || 0; 
+          totalFiles++;
           if (info.modificationTime && info.modificationTime > maxModTime) maxModTime = info.modificationTime;
+          
+          if (!file.endsWith('.json')) {
+            const ext = file.split('.').pop()?.toLowerCase();
+            if (file.endsWith('.kml')) mediaStats.kmls++;
+            else if (parentDir === 'geotagged_captures') mediaStats.geo++;
+            else if (parentDir === 'notes') { if (ext === 'txt') mediaStats.text++; else mediaStats.audio++; }
+            else if (parentDir === 'attachments') {
+              if (['mp4','mov'].includes(ext!)) mediaStats.vids++;
+              else if (['jpg','png','jpeg'].includes(ext!)) mediaStats.photos++;
+              else mediaStats.docs++;
+            }
+          }
         }
       }
     };
 
     await traverse(baseProjDir);
     const uniqueDates = [...new Set(dates)].sort((a,b) => b.localeCompare(a));
-    return { uniqueDates, totalSize, totalFiles, maxModTime };
+    return { uniqueDates, totalSize, totalFiles, maxModTime, mediaStats };
   };
 
   const loadRecentProjects = async (isMounted: boolean) => {
     setLoading(true);
     try {
-      // Fetch KML presence locally alongside project loads
       const kmls = await getProjectsWithLocalKmls();
       if (isMounted) setKmlProjects(kmls);
 
@@ -107,7 +120,8 @@ export default function DashboardTab() {
                activeTenders.push({ 
                  ...t, folderName: expectedFolder, visitDates: meta.uniqueDates, 
                  latestDate: meta.uniqueDates[0], totalSize: meta.totalSize,
-                 totalFiles: meta.totalFiles, maxModTime: meta.maxModTime
+                 totalFiles: meta.totalFiles, maxModTime: meta.maxModTime,
+                 mediaStats: meta.mediaStats
                });
             }
          }
@@ -121,7 +135,6 @@ export default function DashboardTab() {
     }
   };
 
-  // Complex Sort/Group logic for the UI FlatList
   const processedData = useMemo(() => {
     let filtered = recentProjects.filter(p => {
       if (!search) return true;
@@ -134,17 +147,42 @@ export default function DashboardTab() {
     else filtered.sort((a, b) => sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate));
 
     if (sortBy === 'Date') {
-      const grouped = [];
+      const grouped: any[] = [];
       let currentDate = '';
+      let dateStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
+      
       filtered.forEach(p => {
          if (p.latestDate !== currentDate) {
-            grouped.push({ isHeader: true, date: p.latestDate, id: `header_${p.latestDate}` });
+            if (currentDate !== '') {
+               grouped.push({ isHeader: true, date: currentDate, id: `header_${currentDate}`, stats: { ...dateStats } });
+            }
             currentDate = p.latestDate;
+            dateStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
          }
+         
+         dateStats.photos += p.mediaStats?.photos || 0;
+         dateStats.vids += p.mediaStats?.vids || 0;
+         dateStats.audio += p.mediaStats?.audio || 0;
+         dateStats.text += p.mediaStats?.text || 0;
+         dateStats.docs += p.mediaStats?.docs || 0;
+         dateStats.geo += p.mediaStats?.geo || 0;
+         dateStats.kmls += p.mediaStats?.kmls || 0;
+         
          grouped.push({ ...p, isHeader: false, id: p.folderName });
       });
-      return grouped;
+      
+      if (currentDate !== '') {
+         grouped.push({ isHeader: true, date: currentDate, id: `header_${currentDate}`, stats: dateStats });
+      }
+      
+      return grouped.sort((a,b) => {
+         const dateA = a.isHeader ? a.date : a.latestDate;
+         const dateB = b.isHeader ? b.date : b.latestDate;
+         if (dateA === dateB) return a.isHeader ? -1 : 1;
+         return sortOrder === 'asc' ? dateA.localeCompare(dateB) : dateB.localeCompare(dateA);
+      });
     }
+    
     return filtered.map(p => ({ ...p, isHeader: false, id: p.folderName }));
   }, [recentProjects, search, sortBy, sortOrder]);
 
@@ -152,7 +190,6 @@ export default function DashboardTab() {
     return recentProjects.filter(p => selectedIds.has(p.folderName)).reduce((acc, curr) => acc + curr.totalSize, 0);
   }, [selectedIds, recentProjects]);
 
-  // Checkbox interactions
   const toggleSelection = (folderName: string) => {
     const newSet = new Set(selectedIds);
     if (newSet.has(folderName)) newSet.delete(folderName);
@@ -260,7 +297,6 @@ export default function DashboardTab() {
   };
 
   const renderItem = ({ item }: { item: any }) => {
-    // Render Header (Grouped by Date)
     if (item.isHeader) {
        const [yyyy, mm, dd] = item.date.split('-');
        const dObj = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
@@ -274,7 +310,19 @@ export default function DashboardTab() {
                <Ionicons name={isDateFullySelected(item.date) ? "checkbox" : "square-outline"} size={22} color={isDateFullySelected(item.date) ? "#2563EB" : "#94A3B8"} />
              </TouchableOpacity>
            )}
-           <View style={styles.dateHeader}><Text style={styles.dateHeaderText}>{dayStr}, {dd}-{mm}-{yyyy}</Text></View>
+           <View style={styles.dateHeader}>
+             <Text style={styles.dateHeaderText}>{dayStr}, {dd}-{mm}-{yyyy}</Text>
+           </View>
+           
+           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginLeft: 10, flex: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 10 }}>
+              {item.stats.geo > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📍 {item.stats.geo} Geo</Text>}
+              {item.stats.photos > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📸 {item.stats.photos} img</Text>}
+              {item.stats.vids > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📹 {item.stats.vids} vid</Text>}
+              {item.stats.text > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📝 {item.stats.text} notes</Text>}
+              {item.stats.audio > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🎙️ {item.stats.audio} aud</Text>}
+              {item.stats.kmls > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🌍 {item.stats.kmls} KML</Text>}
+              {item.stats.docs > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📎 {item.stats.docs} docs</Text>}
+           </ScrollView>
          </View>
        );
     }
@@ -302,13 +350,11 @@ export default function DashboardTab() {
 
         <Text style={[globalStyles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>
         
-        {/* DOV Swapped Up */}
         <View style={[styles.dovContainer, { marginBottom: 12 }]}>
           <Ionicons name="calendar" size={12} color="#059669" style={{marginRight: 4}} />
           <Text style={styles.dovText}>Visited: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}</Text>
         </View>
 
-        {/* Location/Tender info row & Green KML Button */}
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderColor: '#F1F5F9', paddingTop: 10 }}>
           <View style={{ flex: 1, paddingRight: 10 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
@@ -340,7 +386,6 @@ export default function DashboardTab() {
   return (
     <View style={globalStyles.container}>
       <View style={styles.header}>
-        {/* ROW 1: Titles & Select Button aligned to Top Right */}
         <View style={styles.headerRow}>
           <View style={{ flex: 1, paddingRight: 10 }}>
             <Text style={styles.title}>Dashboard</Text>
@@ -355,7 +400,6 @@ export default function DashboardTab() {
           </TouchableOpacity>
         </View>
 
-        {/* ROW 2: Dynamic Search & Sort */}
         <View style={styles.searchSortRow}>
           {isSearchActive ? (
             <View style={styles.activeSearchContainer}>

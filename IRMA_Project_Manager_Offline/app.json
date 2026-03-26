@@ -23,20 +23,15 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false,
+      "googleServicesFile": "./google-services.json",
+      "package": "com.deepsah.irmaprojectmanager",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.CAMERA",
-        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.WRITE_EXTERNAL_STORAGE"
-      ],
-      "package": "com.deepsah.irmaprojectmanager"
+      ]
     },
     "web": {
       "output": "static",
@@ -59,6 +54,8 @@
       "expo-sqlite",
       "expo-video",
       "expo-audio",
+      "expo-notifications",
+      "expo-secure-store",
       [
         "expo-build-properties",
         {
@@ -67,8 +64,13 @@
           }
         }
       ],
-      "expo-secure-store",
-      "@react-native-firebase/app"
+      [
+        "@react-native-firebase/app",
+        {
+          "androidGoogleServicesJson": "./google-services.json"
+        }
+      ],
+      "@react-native-firebase/messaging"
     ],
     "experiments": {
       "typedRoutes": true,
