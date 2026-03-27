@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { downloadAndInitDatabase, wipeSecureDatabase, DB_NAME } from '../utils/dbManager';
 import { verifyUserAccess, registerDeviceToUser } from '../utils/accessManager';
 import AuthScreen from '../components/AuthScreen';
+import UpdateHandler from '../components/UpdateHandler';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -148,23 +149,33 @@ export default function RootLayout() {
     await initDB();
   };
 
-  if (isAuth === null) return null;
-  
-  if (!isAuth) {
-    return <AuthScreen onLoginSuccess={handleLoginSuccess} />; 
-  }
-  
-  if (!isDbReady) {
-    return <DatabaseLoadingScreen progress={downloadProgress} hasError={dbError} onRetry={initDB} />;
+  // Render Logic
+  let mainContent = null;
+
+  if (isAuth === null) {
+    mainContent = null;
+  } else if (!isAuth) {
+    mainContent = <AuthScreen onLoginSuccess={handleLoginSuccess} />; 
+  } else if (!isDbReady) {
+    mainContent = <DatabaseLoadingScreen progress={downloadProgress} hasError={dbError} onRetry={initDB} />;
+  } else {
+    mainContent = (
+      <SQLiteProvider databaseName={DB_NAME}>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="project/[id]" options={{ presentation: 'card' }} />
+        </Stack>
+      </SQLiteProvider>
+    );
   }
 
+  // Mounts the UpdateHandler at the root level so it overlays everything,
+  // including AuthScreen and DatabaseLoadingScreen.
   return (
-    <SQLiteProvider databaseName={DB_NAME}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="project/[id]" options={{ presentation: 'card' }} />
-      </Stack>
-    </SQLiteProvider>
+    <>
+      <UpdateHandler />
+      {mainContent}
+    </>
   );
 }
 

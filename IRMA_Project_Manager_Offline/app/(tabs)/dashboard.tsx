@@ -21,13 +21,7 @@ const formatBytes = (bytes: number) => {
 };
 
 const getShortSortName = (val: string) => {
-  const map: Record<string, string> = { 
-    'Date-Time': 'Time', 
-    'Project Title': 'Title', 
-    'Project ID': 'PR ID', 
-    'Tender ID': 'TD ID', 
-    'Number of Files': 'Files' 
-  };
+  const map: Record<string, string> = { 'Date-Time': 'Time', 'Project Title': 'Title', 'Project ID': 'PR ID', 'Tender ID': 'TD ID', 'Number of Files': 'Files' };
   return map[val] || val;
 };
 
@@ -65,25 +59,25 @@ export default function DashboardTab() {
     }, [])
   );
 
-  const getFolderDatesAndSize = async (folderName: string) => {
+  // Dynamic parser that accepts absolute paths
+  const getFolderDatesAndSizeDynamic = async (absolutePath: string) => {
     let totalSize = 0, totalFiles = 0, maxModTime = 0;
     const dates: string[] = [];
-    const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
-    
     let mediaStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
     
     const traverse = async (currentPath: string, parentDir: string = '') => {
       const files = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
       for (const file of files) {
         const fullPath = `${currentPath}${file}`;
-        const info = await FileSystem.getInfoAsync(fullPath);
+        const info = await FileSystem.getInfoAsync(fullPath).catch(() => null);
+        if (!info) continue;
         
         if (info.isDirectory) {
           if (file.startsWith('VISIT_')) {
             const parts = file.split('_');
-            if (parts.length >= 3) {
+            if (parts.length >= 3 && parts[2].length === 8) {
               const d = parts[2];
-              if (d.length === 8) dates.push(`${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`);
+              dates.push(`${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`);
             }
           }
           await traverse(`${fullPath}/`, file);
@@ -97,33 +91,23 @@ export default function DashboardTab() {
             const ext = lowerFile.split('.').pop() || '';
             const normalizedParent = parentDir.toLowerCase();
             
-            if (lowerFile.endsWith('.kml')) {
-               mediaStats.kmls++; 
-            } else if (['txt'].includes(ext)) {
-               mediaStats.text++;
-            } else if (['m4a', 'wav', 'mp3'].includes(ext)) {
-               mediaStats.audio++;
-            } else if (['pdf', 'doc', 'docx', 'csv', 'xls', 'xlsx'].includes(ext)) {
-               mediaStats.docs++;
-            } else if (['mp4', 'mov'].includes(ext)) {
-               mediaStats.vids++;
-            } else if (['jpg', 'png', 'jpeg'].includes(ext)) {
-               if (normalizedParent.includes('geotag')) {
-                  mediaStats.geo++;
-               } else {
-                  mediaStats.photos++;
-               }
+            if (lowerFile.endsWith('.kml')) mediaStats.kmls++; 
+            else if (['txt'].includes(ext)) mediaStats.text++;
+            else if (['m4a', 'wav', 'mp3'].includes(ext)) mediaStats.audio++;
+            else if (['pdf', 'doc', 'docx', 'csv', 'xls', 'xlsx'].includes(ext)) mediaStats.docs++;
+            else if (['mp4', 'mov'].includes(ext)) mediaStats.vids++;
+            else if (['jpg', 'png', 'jpeg'].includes(ext)) {
+               if (normalizedParent.includes('geotag')) mediaStats.geo++;
+               else mediaStats.photos++;
             } else {
-               if (normalizedParent.includes('attachment') || normalizedParent.includes('document')) {
-                  mediaStats.docs++;
-               }
+               if (normalizedParent.includes('attachment') || normalizedParent.includes('document')) mediaStats.docs++;
             }
           }
         }
       }
     };
 
-    await traverse(baseProjDir);
+    await traverse(absolutePath);
     const uniqueDates = [...new Set(dates)].sort((a,b) => b.localeCompare(a));
     return { uniqueDates, totalSize, totalFiles, maxModTime, mediaStats };
   };
@@ -131,35 +115,88 @@ export default function DashboardTab() {
   const loadRecentProjects = async (isMounted: boolean) => {
     setLoading(true);
     try {
-      const kmls = await getProjectsWithLocalKmls();
+      const kmls = await getProjectsWithLocalKmls().catch(() => new Set());
       if (isMounted) setKmlProjects(kmls);
 
-      const baseUri = `${FileSystem.documentDirectory}projects/`;
-      const dirInfo = await FileSystem.getInfoAsync(baseUri);
-      if (!dirInfo.exists) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
+      let allTenders: any[] = [];
+      try {
+        allTenders = await sqlDb.getAllAsync("SELECT * FROM tenders") as any[];
+      } catch (dbError) {
+        console.warn("DB read failed", dbError);
+      }
 
-      const activeFolders = await FileSystem.readDirectoryAsync(baseUri);
-      if (activeFolders.length === 0) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
+      const rootUri = FileSystem.documentDirectory;
+      if (!rootUri) return;
 
-      const allTenders = await sqlDb.getAllAsync("SELECT * FROM tenders") as any[];
-      const activeTenders = [];
+      const foundFolders: string[] = [];
+      const folderPaths: Record<string, string> = {};
 
-      for (const t of allTenders) {
-         const expectedFolder = `${t.project_id}_${t.tender_id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-         if (activeFolders.includes(expectedFolder)) {
-            const meta = await getFolderDatesAndSize(expectedFolder);
-            if (meta.uniqueDates.length > 0 && meta.totalFiles > 0) {
-               activeTenders.push({ 
-                 ...t, folderName: expectedFolder, visitDates: meta.uniqueDates, 
-                 latestDate: meta.uniqueDates[0], totalSize: meta.totalSize,
-                 totalFiles: meta.totalFiles, maxModTime: meta.maxModTime,
-                 mediaStats: meta.mediaStats
-               });
-            }
+      // DEEP SCAN: Check multiple possible storage locations
+      const dirsToCheck = [rootUri, `${rootUri}projects/`, `${rootUri}IRMA_Projects/`];
+
+      for (const dir of dirsToCheck) {
+         const exists = await FileSystem.getInfoAsync(dir).catch(() => ({ exists: false }));
+         if (exists.exists) {
+             const items = await FileSystem.readDirectoryAsync(dir).catch(() => []);
+             for (const item of items) {
+                 const itemPath = `${dir}${item}/`;
+                 const info = await FileSystem.getInfoAsync(itemPath).catch(() => ({ isDirectory: false }));
+                 
+                 if (info.isDirectory) {
+                     // Ignore system/expo folders
+                     if (item === 'projects' || item === 'IRMA_Projects' || item === 'SQLite' || item.startsWith('.')) continue;
+                     
+                     if (!foundFolders.includes(item)) {
+                         foundFolders.push(item);
+                         folderPaths[item] = itemPath;
+                     }
+                 }
+             }
          }
       }
 
-      if (isMounted) { setRecentProjects(activeTenders); setSelectedIds(new Set()); setIsSelectionMode(false); }
+      const combinedProjects = [];
+
+      for (const folderName of foundFolders) {
+         const exactPath = folderPaths[folderName];
+         const meta = await getFolderDatesAndSizeDynamic(exactPath);
+         
+         // Only skip if absolutely empty to ensure we don't miss hidden media
+         if (meta.totalFiles === 0 && meta.totalSize === 0) continue; 
+
+         const matchedTender = allTenders.find(t => {
+             const expectedFolder = `${t.project_id}_${t.tender_id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+             return expectedFolder === folderName || folderName.includes(t.project_id);
+         });
+
+         const baseProjData = {
+             folderName: folderName,
+             exactPath: exactPath, // Store the exact path found during deep scan
+             visitDates: meta.uniqueDates.length > 0 ? meta.uniqueDates : ['Unknown'],
+             latestDate: meta.uniqueDates[0] || 'Unknown',
+             totalSize: meta.totalSize,
+             totalFiles: meta.totalFiles,
+             maxModTime: meta.maxModTime,
+             mediaStats: meta.mediaStats
+         };
+
+         if (matchedTender) {
+             combinedProjects.push({ ...matchedTender, ...baseProjData, isRecovered: false });
+         } else {
+             const parts = folderName.split('_');
+             combinedProjects.push({
+                 ...baseProjData,
+                 project_id: parts[0] || folderName,
+                 tender_id: parts.slice(1).join('_') || 'Unknown',
+                 project_title: 'Unverified / Recovered Data',
+                 ulb: 'Device Storage',
+                 state: 'Local',
+                 isRecovered: true
+             });
+         }
+      }
+
+      if (isMounted) { setRecentProjects(combinedProjects); setSelectedIds(new Set()); setIsSelectionMode(false); }
     } catch (e) {
       console.error(e);
     } finally {
@@ -167,39 +204,28 @@ export default function DashboardTab() {
     }
   };
 
-  // Dedicated logic to find the absolute newest KML in a dynamic directory structure
-  const handleShareLatestKml = async (folderName: string) => {
+  const handleShareLatestKml = async (exactPath: string) => {
     try {
-      const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
-      let latestKmlUri = '';
-      let latestTime = 0;
+      let latestKmlUri = ''; let latestTime = 0;
 
       const findLatestKml = async (currentPath: string) => {
         const files = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
         for (const file of files) {
           const fullPath = `${currentPath}${file}`;
           const info = await FileSystem.getInfoAsync(fullPath);
-          if (info.isDirectory) {
-            await findLatestKml(`${fullPath}/`);
-          } else if (file.toLowerCase().endsWith('.kml')) {
+          if (info.isDirectory) { await findLatestKml(`${fullPath}/`); } 
+          else if (file.toLowerCase().endsWith('.kml')) {
             if (info.modificationTime && info.modificationTime > latestTime) {
-              latestTime = info.modificationTime;
-              latestKmlUri = fullPath;
+              latestTime = info.modificationTime; latestKmlUri = fullPath;
             }
           }
         }
       };
+      await findLatestKml(exactPath);
 
-      await findLatestKml(baseProjDir);
-
-      if (latestKmlUri) {
-        await Sharing.shareAsync(latestKmlUri, { dialogTitle: 'Share Project Location (KML)' });
-      } else {
-        Alert.alert("Not Found", "No KML file found for this project.");
-      }
-    } catch (e) {
-      Alert.alert("Error", "Could not share KML file.");
-    }
+      if (latestKmlUri) await Sharing.shareAsync(latestKmlUri, { dialogTitle: 'Share Project Location (KML)' });
+      else Alert.alert("Not Found", "No KML file found for this project.");
+    } catch (e) { Alert.alert("Error", "Could not share KML file."); }
   };
 
   const processedData = useMemo(() => {
@@ -222,37 +248,39 @@ export default function DashboardTab() {
     }
 
     if (sortBy === 'Date-Time') {
+      const normalProjects = filtered.filter(p => !p.isRecovered);
+      const recoveredProjects = filtered.filter(p => p.isRecovered);
+      const finalData: any[] = [];
       const dateStatsMap: Record<string, any> = {};
       
-      filtered.forEach(p => {
-         if (!dateStatsMap[p.latestDate]) {
-            dateStatsMap[p.latestDate] = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
-         }
+      normalProjects.forEach(p => {
+         if (!dateStatsMap[p.latestDate]) dateStatsMap[p.latestDate] = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
          const st = dateStatsMap[p.latestDate];
-         st.photos += p.mediaStats?.photos || 0;
-         st.vids += p.mediaStats?.vids || 0;
-         st.audio += p.mediaStats?.audio || 0;
-         st.text += p.mediaStats?.text || 0;
-         st.docs += p.mediaStats?.docs || 0;
-         st.geo += p.mediaStats?.geo || 0;
-         st.kmls += p.mediaStats?.kmls || 0;
+         st.photos += p.mediaStats?.photos || 0; st.vids += p.mediaStats?.vids || 0; st.audio += p.mediaStats?.audio || 0;
+         st.text += p.mediaStats?.text || 0; st.docs += p.mediaStats?.docs || 0; st.geo += p.mediaStats?.geo || 0; st.kmls += p.mediaStats?.kmls || 0;
       });
 
-      const finalData: any[] = [];
       let currentDate = '';
-      
-      filtered.forEach(p => {
+      normalProjects.forEach(p => {
          if (p.latestDate !== currentDate) {
             currentDate = p.latestDate;
-            finalData.push({ 
-               isHeader: true, 
-               date: currentDate, 
-               id: `header_${currentDate}`, 
-               stats: dateStatsMap[currentDate] 
-            });
+            finalData.push({ isHeader: true, date: currentDate, id: `header_${currentDate}`, stats: dateStatsMap[currentDate] });
          }
          finalData.push({ ...p, isHeader: false, id: p.folderName });
       });
+
+      if (recoveredProjects.length > 0) {
+         const recStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
+         recoveredProjects.forEach(p => {
+             recStats.photos += p.mediaStats?.photos || 0; recStats.vids += p.mediaStats?.vids || 0; recStats.audio += p.mediaStats?.audio || 0;
+             recStats.text += p.mediaStats?.text || 0; recStats.docs += p.mediaStats?.docs || 0; recStats.geo += p.mediaStats?.geo || 0; recStats.kmls += p.mediaStats?.kmls || 0;
+         });
+         
+         finalData.push({ isHeader: true, date: 'Recovered_Projects', id: 'header_recovered', stats: recStats, isRecoveredHeader: true });
+         recoveredProjects.forEach(p => {
+             finalData.push({ ...p, isHeader: false, id: p.folderName });
+         });
+      }
       
       return finalData;
     }
@@ -266,59 +294,50 @@ export default function DashboardTab() {
 
   const toggleSelection = (folderName: string) => {
     const newSet = new Set(selectedIds);
-    if (newSet.has(folderName)) newSet.delete(folderName);
-    else newSet.add(folderName);
+    if (newSet.has(folderName)) newSet.delete(folderName); else newSet.add(folderName);
     setSelectedIds(newSet);
   };
 
-  const isDateFullySelected = (date: string) => {
-    const projectsForDate = recentProjects.filter(p => p.latestDate === date);
+  const isDateFullySelected = (date: string, isRecoveredHeader = false) => {
+    const projectsForDate = recentProjects.filter(p => isRecoveredHeader ? p.isRecovered : (!p.isRecovered && p.latestDate === date));
     if (projectsForDate.length === 0) return false;
     return projectsForDate.every(p => selectedIds.has(p.folderName));
   };
 
-  const toggleDateSelection = (date: string) => {
-    const projectsForDate = recentProjects.filter(p => p.latestDate === date);
+  const toggleDateSelection = (date: string, isRecoveredHeader = false) => {
+    const projectsForDate = recentProjects.filter(p => isRecoveredHeader ? p.isRecovered : (!p.isRecovered && p.latestDate === date));
     const newSet = new Set(selectedIds);
-    if (isDateFullySelected(date)) projectsForDate.forEach(p => newSet.delete(p.folderName));
+    if (isDateFullySelected(date, isRecoveredHeader)) projectsForDate.forEach(p => newSet.delete(p.folderName));
     else projectsForDate.forEach(p => newSet.add(p.folderName));
     setSelectedIds(newSet);
   };
 
   const handleSelectModal = (selection: string) => {
-    if (sortOptions.includes(selection as SortOption)) {
-      setSortBy(selection as SortOption); setSortOrder('asc');
-    }
+    if (sortOptions.includes(selection as SortOption)) { setSortBy(selection as SortOption); setSortOrder('asc'); }
     setActiveModal(null);
   };
 
   const handleBulkDelete = () => {
-    Alert.alert("Erase Media Files?", "This will permanently delete photos, videos, and notes, but will retain location pins (KML) and metadata.", [
+    Alert.alert("Erase Media Files?", "This will permanently delete photos, videos, and notes.", [
       { text: "Cancel", style: "cancel" },
       { text: "Erase Media", style: "destructive", onPress: async () => {
           setIsProcessingAction(true);
           try {
-            for (const folder of Array.from(selectedIds)) {
-               const folderPath = `${FileSystem.documentDirectory}projects/${folder}/`;
-               
+            const selectedData = recentProjects.filter(p => selectedIds.has(p.folderName));
+            for (const project of selectedData) {
                const traverseAndDeleteMedia = async (currentPath: string) => {
                   const files = await FileSystem.readDirectoryAsync(currentPath);
                   for (const file of files) {
                      const fullPath = `${currentPath}${file}`;
                      const info = await FileSystem.getInfoAsync(fullPath);
-                     
-                     if (info.isDirectory) {
-                        await traverseAndDeleteMedia(`${fullPath}/`);
-                     } else {
+                     if (info.isDirectory) { await traverseAndDeleteMedia(`${fullPath}/`); } 
+                     else {
                         const lowerFile = file.toLowerCase();
-                        if (!lowerFile.endsWith('.json') && !lowerFile.endsWith('.kml')) {
-                           await FileSystem.deleteAsync(fullPath, { idempotent: true });
-                        }
+                        if (!lowerFile.endsWith('.json') && !lowerFile.endsWith('.kml')) { await FileSystem.deleteAsync(fullPath, { idempotent: true }); }
                      }
                   }
                };
-               
-               await traverseAndDeleteMedia(folderPath);
+               await traverseAndDeleteMedia(project.exactPath);
             }
             setSelectedIds(new Set()); setIsSelectionMode(false); loadRecentProjects(true);
           } catch(e) { Alert.alert("Error", "Could not cleanly delete all media files."); }
@@ -333,10 +352,8 @@ export default function DashboardTab() {
     const totalFiles = selectedData.reduce((acc, curr) => acc + curr.totalFiles, 0);
     
     let exportName = `Export_${Date.now()}`;
-    
-    if (selectedIds.size === 1) {
-       exportName = selectedData[0].folderName;
-    } else {
+    if (selectedIds.size === 1) { exportName = selectedData[0].folderName; } 
+    else {
        const allSelectedDates = selectedData.flatMap(p => p.visitDates).sort();
        if (allSelectedDates.length > 0) {
          const minDate = allSelectedDates[0].replace(/-/g, '');
@@ -347,35 +364,32 @@ export default function DashboardTab() {
 
     Alert.alert("Share Selected Projects", `Sharing ${selectedIds.size} project(s).\nTotal Size: ~${formatBytes(totalBytes)}`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Share as Link (Cloud)", onPress: () => executeBulkShare('link', exportName, totalBytes, totalFiles) },
-      { text: "Share as ZIP (Local)", onPress: () => executeBulkShare('local', exportName, totalBytes, totalFiles) }
+      { text: "Share as Link (Cloud)", onPress: () => executeBulkShare('link', exportName, totalBytes, totalFiles, selectedData) },
+      { text: "Share as ZIP (Local)", onPress: () => executeBulkShare('local', exportName, totalBytes, totalFiles, selectedData) }
     ]);
   };
 
-  const executeBulkShare = async (type: 'link' | 'local', exportName: string, totalSize: number, totalFiles: number) => {
+  const executeBulkShare = async (type: 'link' | 'local', exportName: string, totalSize: number, totalFiles: number, selectedData: any[]) => {
     setIsProcessingAction(true); setBulkExportStatus('Preparing files...');
     const stagingPath = `${FileSystem.cacheDirectory}staging_${exportName}/`;
     
     try {
       await FileSystem.makeDirectoryAsync(stagingPath, { intermediates: true });
-      for (const folder of Array.from(selectedIds)) {
-        await FileSystem.copyAsync({ from: `${FileSystem.documentDirectory}projects/${folder}/`, to: `${stagingPath}${folder}/` });
+      for (const project of selectedData) {
+        // Use the dynamically discovered exactPath
+        await FileSystem.copyAsync({ from: project.exactPath, to: `${stagingPath}${project.folderName}/` });
       }
 
       if (type === 'link') {
         const currentMeta = { totalFiles, totalSize, maxModTime: Date.now() };
-        
         let uName = 'AnonymousUser';
         try {
           const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
           if (sessionStr) {
             const parsedSession = JSON.parse(sessionStr);
             const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-            if (userSnap.exists() && userSnap.data().username) {
-              uName = userSnap.data().username;
-            } else {
-              uName = parsedSession.userId;
-            }
+            if (userSnap.exists() && userSnap.data().username) uName = userSnap.data().username;
+            else uName = parsedSession.userId;
           }
         } catch (e) {}
 
@@ -383,8 +397,7 @@ export default function DashboardTab() {
            setBulkExportStatus(status);
         });
         
-        const projectList = Array.from(selectedIds).map(id => `- ${id}`).join('\n');
-        
+        const projectList = selectedData.map(p => `- ${p.folderName}`).join('\n');
         await Share.share({ message: `Project Export Link:\n${expectedUrl}\n\nProjects Included:\n${projectList}\n\nNote: The link might take a minute to activate while files upload.` });
         
         startBackgroundUpload().finally(async () => {
@@ -413,45 +426,53 @@ export default function DashboardTab() {
 
   const renderItem = ({ item }: { item: any }) => {
     if (item.isHeader) {
-       const [yyyy, mm, dd] = item.date.split('-');
-       const dObj = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
-       const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-       const dayStr = days[dObj.getDay()];
+       let headerTitle = '';
+       let headerStyle = styles.dateHeaderText;
+
+       if (item.isRecoveredHeader) {
+           headerTitle = "Recovered Unverified Projects";
+           headerStyle = [styles.dateHeaderText, { backgroundColor: '#FEF2F2', color: '#DC2626' }];
+       } else {
+           const [yyyy, mm, dd] = item.date.split('-');
+           if(yyyy && mm && dd) {
+               const dObj = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
+               const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+               headerTitle = `${days[dObj.getDay()]}, ${dd}-${mm}-${yyyy}`;
+           } else {
+               headerTitle = item.date;
+           }
+       }
 
        return (
          <View style={styles.dateHeaderContainer}>
            {isSelectionMode && (
-             <TouchableOpacity style={{ padding: 10, marginRight: 5 }} onPress={() => toggleDateSelection(item.date)}>
-               <Ionicons name={isDateFullySelected(item.date) ? "checkbox" : "square-outline"} size={22} color={isDateFullySelected(item.date) ? "#2563EB" : "#94A3B8"} />
+             <TouchableOpacity style={{ padding: 10, marginRight: 5 }} onPress={() => toggleDateSelection(item.date, item.isRecoveredHeader)}>
+               <Ionicons name={isDateFullySelected(item.date, item.isRecoveredHeader) ? "checkbox" : "square-outline"} size={22} color={isDateFullySelected(item.date, item.isRecoveredHeader) ? "#2563EB" : "#94A3B8"} />
              </TouchableOpacity>
            )}
            <View style={styles.dateHeader}>
-             <Text style={styles.dateHeaderText}>{dayStr}, {dd}-{mm}-{yyyy}</Text>
+             <Text style={headerStyle}>{headerTitle}</Text>
            </View>
            
            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginLeft: 10, flex: 1 }} contentContainerStyle={{ alignItems: 'center', gap: 10 }}>
-              {item.stats.geo > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📍 {item.stats.geo} GeoTagIMG</Text>}
-              {item.stats.photos > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📸 {item.stats.photos} Image</Text>}
-              {item.stats.vids > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📹 {item.stats.vids} Videos</Text>}
-              {item.stats.text > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📝 {item.stats.text} Notes</Text>}
-              {item.stats.audio > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🎙️ {item.stats.audio} Voice</Text>}
-              {item.stats.kmls > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🌍 {item.stats.kmls} KML</Text>}
-              {item.stats.docs > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📎 {item.stats.docs} Docs</Text>}
+              {item.stats.geo > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📍 {item.stats.geo}</Text>}
+              {item.stats.photos > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📸 {item.stats.photos}</Text>}
+              {item.stats.vids > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📹 {item.stats.vids}</Text>}
+              {item.stats.text > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📝 {item.stats.text}</Text>}
+              {item.stats.audio > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>🎙️ {item.stats.audio}</Text>}
+              {item.stats.docs > 0 && <Text style={{fontSize: 12, color: '#64748B'}}>📎 {item.stats.docs}</Text>}
            </ScrollView>
          </View>
        );
     }
 
     const isSelected = selectedIds.has(item.folderName);
-    
-    // Validates whether the button should show, prioritizing the deep-scan over the legacy function
     const hasKml = kmlProjects.has(item.folderName) || (item.mediaStats?.kmls > 0);
-    
     const exactTime = new Date(item.maxModTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     return (
       <TouchableOpacity 
-        style={[globalStyles.card, isSelectionMode && isSelected && styles.cardSelected]} 
+        style={[globalStyles.card, isSelectionMode && isSelected && styles.cardSelected, item.isRecovered && { borderColor: '#FECACA' }]} 
         activeOpacity={0.7} 
         onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.folderName); }}
         onPress={() => {
@@ -462,17 +483,20 @@ export default function DashboardTab() {
         <View style={styles.cardHeader}>
           {isSelectionMode && <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={22} color={isSelected ? "#2563EB" : "#94A3B8"} style={{marginRight: 10}} />}
           <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
-            <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
+            <Ionicons name="folder-open" size={18} color={item.isRecovered ? "#EF4444" : "#2563EB"} style={{marginRight: 6}} />
             <Text style={globalStyles.cardTitle}>{item.project_id}</Text>
+            {item.isRecovered && <Ionicons name="warning" size={14} color="#EF4444" style={{marginLeft: 6}} />}
           </View>
           <Text style={{fontSize: 11, color: '#94A3B8', fontWeight: 'bold'}}>{exactTime}</Text>
         </View>
 
         <Text style={[globalStyles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>
         
-        <View style={[styles.dovContainer, { marginBottom: 12 }]}>
-          <Ionicons name="calendar" size={12} color="#059669" style={{marginRight: 4}} />
-          <Text style={styles.dovText}>Visited: {item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}</Text>
+        <View style={[styles.dovContainer, { marginBottom: 12 }, item.isRecovered && { backgroundColor: '#FEF2F2' }]}>
+          <Ionicons name="calendar" size={12} color={item.isRecovered ? "#DC2626" : "#059669"} style={{marginRight: 4}} />
+          <Text style={[styles.dovText, item.isRecovered && { color: '#991B1B' }]}>
+              {item.visitDates[0] === 'Unknown' ? 'Unknown Date' : `Visited: ${item.visitDates.map((d:string) => { const [y,m,day]=d.split('-'); return `${day}-${m}-${y}`; }).join(', ')}`}
+          </Text>
         </View>
 
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderColor: '#F1F5F9', paddingTop: 10 }}>
@@ -490,7 +514,7 @@ export default function DashboardTab() {
           {hasKml && (
              <TouchableOpacity 
                style={[globalStyles.locateGreenBtn, { flex: 0, paddingHorizontal: 12, paddingVertical: 8 }]} 
-               onPress={() => handleShareLatestKml(item.folderName)}
+               onPress={() => handleShareLatestKml(item.exactPath)}
              >
                <Ionicons name="earth" size={16} color="white" />
                <Text style={globalStyles.locateBtnText}>Locate-KML</Text>
@@ -501,7 +525,7 @@ export default function DashboardTab() {
     );
   };
 
-  if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Scanning local workspace...</Text></View>;
+  if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Deep scanning storage...</Text></View>;
 
   return (
     <View style={globalStyles.container}>
@@ -516,7 +540,7 @@ export default function DashboardTab() {
              onPress={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
           >
              <Ionicons name={isSelectionMode ? "close" : "checkbox-outline"} size={16} color={isSelectionMode ? "#EF4444" : "#2563EB"} />
-             <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select Projects'}</Text>
+             <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -565,7 +589,7 @@ export default function DashboardTab() {
           <View style={styles.emptyBox}>
             <Ionicons name="documents-outline" size={64} color="#CBD5E1" />
             <Text style={styles.emptyText}>No Active Projects</Text>
-            <Text style={styles.emptySubText}>Visit the Projects tab and create reports to see them here.</Text>
+            <Text style={styles.emptySubText}>The deep scan found 0 bytes of media.</Text>
           </View>
         }
       />
@@ -582,7 +606,7 @@ export default function DashboardTab() {
                </TouchableOpacity>
                <TouchableOpacity style={[styles.bulkBtn, { backgroundColor: '#2563EB', paddingHorizontal: 20 }]} onPress={handleBulkShare} disabled={selectedIds.size === 0}>
                  <Ionicons name="share-social" size={18} color="#FFF" style={{marginRight: 6}} />
-                 <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Share Projects</Text>
+                 <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Share</Text>
                </TouchableOpacity>
             </View>
          </View>
@@ -597,7 +621,7 @@ export default function DashboardTab() {
       {isProcessingAction && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#FFF" />
-          <Text style={{color: '#FFF', marginTop: 15, fontWeight: 'bold', textAlign: 'center', paddingHorizontal: 20, lineHeight: 24}}>{bulkExportStatus || 'Processing Folders...'}</Text>
+          <Text style={{color: '#FFF', marginTop: 15, fontWeight: 'bold', textAlign: 'center', paddingHorizontal: 20, lineHeight: 24}}>{bulkExportStatus || 'Processing...'}</Text>
         </View>
       )}
 
