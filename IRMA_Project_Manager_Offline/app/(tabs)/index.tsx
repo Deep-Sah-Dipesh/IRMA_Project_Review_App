@@ -22,9 +22,20 @@ interface Tender {
   longitude?: string;
 }
 
+// Map sort keys to shorter UI display names
+const getShortSortName = (val: string) => {
+  const map: Record<string, string> = {
+    'title': 'Title',
+    'id': 'PR ID',
+    'type': 'PR Type',
+    'progress': 'Progress'
+  };
+  return map[val] || 'Sort By';
+};
+
 const TenderCard = React.memo(({ item, onPress, hasKml, isVisited }: { item: Tender, onPress: () => void, hasKml: boolean, isVisited: boolean }) => (
-  // ADDED: isVisited triggers opacity to visually distinguish them
-  <TouchableOpacity style={[globalStyles.card, isVisited && { opacity: 0.45 }]} activeOpacity={0.7} onPress={onPress}>
+  // Visited projects now have a light green translucent styling
+  <TouchableOpacity style={[globalStyles.card, isVisited && styles.visitedCard]} activeOpacity={0.7} onPress={onPress}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
       <Text style={styles.cardId}>{item.project_id}</Text>
       <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
@@ -41,7 +52,6 @@ const TenderCard = React.memo(({ item, onPress, hasKml, isVisited }: { item: Ten
       </View>
     </View>
 
-    {/* Rigid Button Layout: Forces 50% width even if one button is missing */}
     <View style={globalStyles.btnRow}>
       <View style={{ flex: 1, marginRight: 5 }}>
         {item.latitude && item.longitude && (
@@ -230,7 +240,7 @@ export default function ProjectsTab() {
         isVisited={isVisited}
         onPress={() => {
           if (isVisited) {
-            Alert.alert("Project Visited", "You have already created visit reports on this project. To view the details, you need to go to the Dashboard section.");
+            Alert.alert("Project Visit Report Exists", "You have already created visit reports on this project. \n\nTo access the details for this project, view it from the Dashboard section.");
             return;
           }
           
@@ -253,19 +263,25 @@ export default function ProjectsTab() {
     <View style={globalStyles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          <Text style={styles.title}>All Projects</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {/* Constrain title to flex 1 to prevent squishing by sort button */}
+          <Text style={styles.title} numberOfLines={1}>All Projects</Text>
+          <View style={styles.headerControls}>
             <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>
               <Ionicons name="search" size={16} color="#1E293B" />
               <Text style={{marginLeft: 4, fontSize: 13, fontWeight: '600', color: '#1E293B'}}>Search</Text>
             </TouchableOpacity>
+            
             <TouchableOpacity 
               style={[styles.sortBtn, sortBy ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 } : {}]} 
               onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}
             >
               <Ionicons name="swap-vertical" size={16} color="#475569" />
-              <Text style={styles.sortBtnText}>{sortBy ? sortOptions.find(o => o.toLowerCase().includes(sortBy)) || 'Sort By' : 'Sort By'}</Text>
+              {/* Uses intelligent shortened names and prevents wrap/overflow */}
+              <Text style={styles.sortBtnText} numberOfLines={1}>
+                {sortBy ? getShortSortName(sortBy) : 'Sort By'}
+              </Text>
             </TouchableOpacity>
+            
             {sortBy !== '' && (
               <TouchableOpacity style={styles.sortDirectionBtn} onPress={() => setSortOrder(p => p === 'asc' ? 'desc' : 'asc')}>
                 <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2563EB" />
@@ -381,17 +397,22 @@ function FilterChip({ label, value, onPress, disabled }: any) {
 const styles = StyleSheet.create({
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF' },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
+  headerControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 },
+  title: { fontSize: 24, fontWeight: '900', color: '#1E293B', flex: 1, paddingRight: 10 },
   searchIconBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 8, marginRight: 8, backgroundColor: '#F1F5F9', borderRadius: 8 },
   activeSearchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', padding: 10, borderRadius: 10, marginTop: 12 },
-  sortBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
-  sortBtnText: { fontSize: 13, color: '#475569', marginLeft: 4, fontWeight: '600' },
+  sortBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, maxWidth: 110 },
+  sortBtnText: { fontSize: 13, color: '#475569', marginLeft: 4, fontWeight: '600', flexShrink: 1 },
   sortDirectionBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 8, borderTopRightRadius: 8, borderBottomRightRadius: 8, marginLeft: 2 },
   input: { marginLeft: 10, flex: 1, fontSize: 16 },
   filterBar: { backgroundColor: '#FFF', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#E2E8F0' },
   filterChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#BFDBFE' },
   filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
+  
+  // New Visited Card Styling
+  visitedCard: { backgroundColor: 'rgba(220, 252, 231, 0.7)', borderColor: '#86EFAC', borderWidth: 1 },
+  
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
   progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },
   cardType: { fontSize: 12, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },

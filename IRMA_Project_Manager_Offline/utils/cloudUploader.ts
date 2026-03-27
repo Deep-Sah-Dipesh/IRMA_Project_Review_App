@@ -45,6 +45,7 @@ const updateSyncCache = async (exportKey: string, meta: any, url: string) => {
 export const generateCloudLinkAndUpload = async (
   exportName: string,
   sourceFolderPath: string,
+  userName: string, 
   currentMeta: { totalFiles: number, totalSize: number, maxModTime: number },
   onProgress: (status: string) => void
 ): Promise<{ expectedUrl: string, startBackgroundUpload: () => Promise<void>, isCached: boolean }> => {
@@ -52,18 +53,22 @@ export const generateCloudLinkAndUpload = async (
   const zipFileName = `${exportName}.zip`;
   const targetZipPath = `${FileSystem.cacheDirectory}${zipFileName}`;
   
-  // CRITICAL 403 FIX: We flatten the path with an underscore to bypass nested-folder security rule blocks.
-  const deviceId = Device.osBuildId || Device.designName || 'Unknown_Device';
-  const firebaseStoragePath = `exports/${deviceId}_${zipFileName}`;
+  const rawDeviceId = Device.osBuildId || Device.designName || 'UnknownDevice';
+  const rawUserName = userName || 'AnonymousUser';
+
+  const cleanUserName = rawUserName.replace(/\s+/g, '');
+  const cleanDeviceId = rawDeviceId.replace(/[\/\\]/g, '_');
+  
+  const firebaseStoragePath = `Project_Exports/${cleanUserName}/${cleanDeviceId}/${zipFileName}`;
   const encodedPath = encodeURIComponent(firebaseStoragePath);
   
-  // Generate Cryptographic Token locally to inject into upload headers
   const downloadToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
   const expectedUrl = `https://firebasestorage.googleapis.com/v0/b/${FIREBASE_BUCKET}/o/${encodedPath}?alt=media&token=${downloadToken}`;
   const uploadEndpoint = `https://firebasestorage.googleapis.com/v0/b/${FIREBASE_BUCKET}/o?name=${encodedPath}`;
 
   const cache = await getSyncCache();
-  const cachedData = cache[exportName];
+  const cacheKey = `${cleanUserName}_${exportName}`;
+  const cachedData = cache[cacheKey];
   
   if (cachedData && cachedData.totalFiles === currentMeta.totalFiles && cachedData.totalSize === currentMeta.totalSize && cachedData.maxModTime === currentMeta.maxModTime) {
       onProgress('Cache Hit. Skipping Upload.');
@@ -103,8 +108,8 @@ export const generateCloudLinkAndUpload = async (
 
           const response = await uploadTask.uploadAsync();
           if (response && response.status === 200) {
-             uploadSuccess = true;
-             break;
+              uploadSuccess = true;
+              break;
           } else throw new Error(`Upload Failed: ${response?.status}`);
         } catch (err: any) {
           if (attempt === 3) throw err;
@@ -115,7 +120,7 @@ export const generateCloudLinkAndUpload = async (
 
       if (uploadSuccess) {
         onProgress('Finalizing...');
-        await updateSyncCache(exportName, currentMeta, expectedUrl);
+        await updateSyncCache(cacheKey, currentMeta, expectedUrl);
       }
       
       await FileSystem.deleteAsync(targetZipPath, { idempotent: true });

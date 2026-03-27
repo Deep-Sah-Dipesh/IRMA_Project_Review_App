@@ -8,6 +8,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { wipeSecureDatabase } from '../../utils/dbManager';
 import { useUserStore } from '../../store/userStore';
+import { registerAndSavePushToken, sendTestNotification } from '../../utils/pushNotifications';
 
 export default function ProfileTab() {
   const store = useUserStore();
@@ -16,6 +17,9 @@ export default function ProfileTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [userId, setUserId] = useState('');
+  
+  // Store the push token for testing purposes
+  const [pushToken, setPushToken] = useState<string | null>(null);
   
   // User Data
   const [name, setName] = useState('');
@@ -42,6 +46,10 @@ export default function ProfileTab() {
       if (sessionStr) {
         const session = JSON.parse(sessionStr);
         setUserId(session.userId);
+        
+        // Register for push notifications and save to Firestore
+        const token = await registerAndSavePushToken(session.userId);
+        if (token) setPushToken(token);
         
         const userRef = doc(db, 'users', session.userId);
         const snap = await getDoc(userRef);
@@ -73,6 +81,18 @@ export default function ProfileTab() {
       Alert.alert("Error", "Could not update phone number.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUpdateWorkRegion = async (newState: string) => {
+    store.updateProfile({ selectedState: newState });
+    setShowStateModal(false);
+    if (!userId) return;
+    
+    try {
+      await updateDoc(doc(db, 'users', userId), { workRegion: newState });
+    } catch (e) {
+      console.error("Failed to sync work region to cloud", e);
     }
   };
 
@@ -108,15 +128,36 @@ export default function ProfileTab() {
     ]);
   };
 
+  // Test Notification Handler
+  const handleTestNotification = async () => {
+    if (!pushToken) {
+      Alert.alert("Token Missing", "Please ensure you are on a physical device and have granted notification permissions.");
+      return;
+    }
+    try {
+      await sendTestNotification(pushToken);
+      Alert.alert("No alerts!", "You'll get app update notification if needed to do so in the future.");
+    } catch (e) {
+      Alert.alert("Error", "Failed to send test notification.");
+    }
+  };
+
   if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#2563EB" /></View>;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 60 }}>
+    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 60, paddingBottom: 60 }}>
       <View style={styles.header}>
         <Text style={styles.title}>User Profile</Text>
+        {/* Updated Notification Bell to trigger test notification */}
+        <TouchableOpacity 
+          style={styles.bellBtn} 
+          onPress={handleTestNotification}
+        >
+          <Ionicons name="notifications-outline" size={24} color="#1E293B" />
+          <View style={styles.notificationBadge} />
+        </TouchableOpacity>
       </View>
 
-      {/* Locked Personal Details */}
       <View style={styles.card}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 }}>
            <Text style={styles.sectionLabel}>Identity Details</Text>
@@ -152,7 +193,6 @@ export default function ProfileTab() {
         </View>
       </View>
 
-      {/* Default State Selection */}
       <View style={styles.card}>
         <Text style={styles.sectionLabel}>Work Region (Default Filter)</Text>
         <TouchableOpacity style={[styles.inputBox, { backgroundColor: '#FFF', borderColor: '#E2E8F0', borderWidth: 1 }]} onPress={() => setShowStateModal(true)}>
@@ -161,7 +201,6 @@ export default function ProfileTab() {
         </TouchableOpacity>
       </View>
 
-      {/* Security Actions */}
       <View style={styles.card}>
         <Text style={styles.sectionLabel}>Security & Access</Text>
         
@@ -170,15 +209,16 @@ export default function ProfileTab() {
           <Text style={{ flex: 1, fontSize: 16, color: '#1E293B', fontWeight: '600' }}>Change Password</Text>
           <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
         </TouchableOpacity>
-
-        <TouchableOpacity style={[styles.actionRow, { borderBottomWidth: 0, marginTop: 10 }]} onPress={handleLogout}>
-          <Ionicons name="log-out" size={20} color="#EF4444" style={{marginRight: 10}} />
-          <Text style={{ flex: 1, fontSize: 16, color: '#EF4444', fontWeight: 'bold' }}>Secure Logout</Text>
-        </TouchableOpacity>
-        <Text style={{ fontSize: 11, color: '#94A3B8', marginTop: 5, textAlign: 'center' }}>Keep your visit data secure by logging out of the app after use to prevent unwanted access.</Text>
       </View>
 
-      {/* Modals */}
+      <TouchableOpacity style={styles.centeredLogoutBtn} onPress={handleLogout}>
+        <Ionicons name="log-out" size={20} color="#EF4444" style={{marginRight: 10}} />
+        <Text style={{ fontSize: 16, color: '#EF4444', fontWeight: 'bold' }}>Secure Logout</Text>
+      </TouchableOpacity>
+      <Text style={{ fontSize: 11, color: '#94A3B8', marginTop: 10, textAlign: 'center', paddingHorizontal: 20 }}>
+        Keep your visit data secure by logging out of the app after use to prevent unwanted access.
+      </Text>
+
       <Modal visible={showStateModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -187,7 +227,7 @@ export default function ProfileTab() {
               <TouchableOpacity onPress={() => setShowStateModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
             </View>
             <FlatList data={states} keyExtractor={i => i} renderItem={({item}) => (
-              <TouchableOpacity style={styles.modalItem} onPress={() => { store.updateProfile({ selectedState: item }); setShowStateModal(false); }}>
+              <TouchableOpacity style={styles.modalItem} onPress={() => handleUpdateWorkRegion(item)}>
                 <Text style={{ fontSize: 16, color: store.selectedState === item ? '#2563EB' : '#1E293B', fontWeight: store.selectedState === item ? 'bold' : 'normal' }}>{item}</Text>
                 {store.selectedState === item && <Ionicons name="checkmark" size={20} color="#2563EB" />}
               </TouchableOpacity>
@@ -222,13 +262,20 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
+  
+  bellBtn: { position: 'relative', padding: 5 },
+  notificationBadge: { position: 'absolute', top: 5, right: 6, backgroundColor: '#EF4444', width: 10, height: 10, borderRadius: 5, borderWidth: 2, borderColor: '#F8FAFC' },
+  
   card: { backgroundColor: '#FFF', padding: 20, borderRadius: 16, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0', elevation: 2 },
-  sectionLabel: { fontSize: 14, fontWeight: '800', color: '#475569', textTransform: 'uppercase' },
+  sectionLabel: { fontSize: 14, fontWeight: '800', color: '#475569', textTransform: 'uppercase', marginBottom: 10 },
   subLabel: { fontSize: 12, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: 0.5 },
   lockedBox: { backgroundColor: '#F1F5F9', paddingHorizontal: 15, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0' },
   lockedText: { color: '#64748B', fontSize: 16, fontWeight: '600' },
   inputBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, borderRadius: 10, fontSize: 16, color: '#1E293B' },
   actionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#F1F5F9' },
+  
+  centeredLogoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', paddingVertical: 15, borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', marginTop: 10 },
+  
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },

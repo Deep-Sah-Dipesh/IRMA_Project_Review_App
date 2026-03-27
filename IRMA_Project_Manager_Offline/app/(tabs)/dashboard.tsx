@@ -6,6 +6,9 @@ import * as Sharing from 'expo-sharing';
 import { zip } from 'react-native-zip-archive';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../utils/firebaseConfig';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 import { globalStyles } from '../../styles/globalStyles';
 import { shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
@@ -17,9 +20,22 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
+const getShortSortName = (val: string) => {
+  const map: Record<string, string> = { 
+    'Date-Time': 'Time', 
+    'Project Title': 'Title', 
+    'Project ID': 'PR ID', 
+    'Tender ID': 'TD ID', 
+    'Number of Files': 'Files' 
+  };
+  return map[val] || val;
+};
+
+type SortOption = 'Date-Time' | 'Project Title' | 'Project ID' | 'Tender ID' | 'Number of Files';
+
 export default function DashboardTab() {
   const router = useRouter();
-  const db = SQLite.useSQLiteContext();
+  const sqlDb = SQLite.useSQLiteContext();
   const flatListRef = useRef<FlatList>(null);
 
   const [loading, setLoading] = useState(true);
@@ -28,7 +44,8 @@ export default function DashboardTab() {
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<'Date-Time' | 'Project ID' | 'Tender ID'>('Date');
+  
+  const [sortBy, setSortBy] = useState<SortOption>('Date-Time');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [activeModal, setActiveModal] = useState<{type: 'sort', options: string[], title: string} | null>(null);
@@ -38,7 +55,7 @@ export default function DashboardTab() {
   const [isProcessingAction, setIsProcessingAction] = useState(false);
   const [bulkExportStatus, setBulkExportStatus] = useState('');
 
-  const sortOptions = ['Date-Time', 'Project ID', 'Tender ID'];
+  const sortOptions: SortOption[] = ['Date-Time', 'Project Title', 'Project ID', 'Tender ID', 'Number of Files'];
 
   useFocusEffect(
     useCallback(() => {
@@ -108,7 +125,7 @@ export default function DashboardTab() {
       const activeFolders = await FileSystem.readDirectoryAsync(baseUri);
       if (activeFolders.length === 0) { if (isMounted) { setRecentProjects([]); setLoading(false); } return; }
 
-      const allTenders = await db.getAllAsync("SELECT * FROM tenders") as any[];
+      const allTenders = await sqlDb.getAllAsync("SELECT * FROM tenders") as any[];
       const activeTenders = [];
 
       for (const t of allTenders) {
@@ -143,8 +160,9 @@ export default function DashboardTab() {
 
     if (sortBy === 'Project ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.project_id.localeCompare(b.project_id) : b.project_id.localeCompare(a.project_id));
     else if (sortBy === 'Tender ID') filtered.sort((a, b) => sortOrder === 'asc' ? a.tender_id.localeCompare(b.tender_id) : b.tender_id.localeCompare(a.tender_id));
-    else if (sortBy === 'Date') {
-      // Primary Sort: Date (YYYY-MM-DD), Secondary Sort: Exact Time (maxModTime)
+    else if (sortBy === 'Project Title') filtered.sort((a, b) => sortOrder === 'asc' ? (a.project_title||'').localeCompare(b.project_title||'') : (b.project_title||'').localeCompare(a.project_title||''));
+    else if (sortBy === 'Number of Files') filtered.sort((a, b) => sortOrder === 'asc' ? a.totalFiles - b.totalFiles : b.totalFiles - a.totalFiles);
+    else if (sortBy === 'Date-Time') {
       filtered.sort((a, b) => {
         const dateCmp = sortOrder === 'asc' ? a.latestDate.localeCompare(b.latestDate) : b.latestDate.localeCompare(a.latestDate);
         if (dateCmp !== 0) return dateCmp;
@@ -152,7 +170,7 @@ export default function DashboardTab() {
       });
     }
 
-    if (sortBy === 'Date') {
+    if (sortBy === 'Date-Time') {
       const grouped: any[] = [];
       let currentDate = '';
       let dateStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
@@ -218,23 +236,42 @@ export default function DashboardTab() {
   };
 
   const handleSelectModal = (selection: string) => {
-    if (selection === 'Date' || selection === 'Project ID' || selection === 'Tender ID') {
-      setSortBy(selection as any); setSortOrder('asc');
+    if (sortOptions.includes(selection as SortOption)) {
+      setSortBy(selection as SortOption); setSortOrder('asc');
     }
     setActiveModal(null);
   };
 
   const handleBulkDelete = () => {
-    Alert.alert("Erase Selected Projects?", "This will permanently delete all photos, videos, and comments inside these visit folders.", [
+    Alert.alert("Erase Media Files?", "This will permanently delete photos, videos, and notes, but will retain location pins (KML) and metadata.", [
       { text: "Cancel", style: "cancel" },
-      { text: "Erase Completely", style: "destructive", onPress: async () => {
+      { text: "Erase Media", style: "destructive", onPress: async () => {
           setIsProcessingAction(true);
           try {
             for (const folder of Array.from(selectedIds)) {
-               await FileSystem.deleteAsync(`${FileSystem.documentDirectory}projects/${folder}/`, { idempotent: true });
+               const folderPath = `${FileSystem.documentDirectory}projects/${folder}/`;
+               
+               const traverseAndDeleteMedia = async (currentPath: string) => {
+                  const files = await FileSystem.readDirectoryAsync(currentPath);
+                  for (const file of files) {
+                     const fullPath = `${currentPath}${file}`;
+                     const info = await FileSystem.getInfoAsync(fullPath);
+                     
+                     if (info.isDirectory) {
+                        await traverseAndDeleteMedia(`${fullPath}/`);
+                     } else {
+                        const lowerFile = file.toLowerCase();
+                        if (!lowerFile.endsWith('.json') && !lowerFile.endsWith('.kml')) {
+                           await FileSystem.deleteAsync(fullPath, { idempotent: true });
+                        }
+                     }
+                  }
+               };
+               
+               await traverseAndDeleteMedia(folderPath);
             }
             setSelectedIds(new Set()); setIsSelectionMode(false); loadRecentProjects(true);
-          } catch(e) { Alert.alert("Error", "Could not delete all files."); }
+          } catch(e) { Alert.alert("Error", "Could not cleanly delete all media files."); }
           setIsProcessingAction(false);
       }}
     ]);
@@ -245,15 +282,20 @@ export default function DashboardTab() {
     const totalBytes = selectedData.reduce((acc, curr) => acc + curr.totalSize, 0);
     const totalFiles = selectedData.reduce((acc, curr) => acc + curr.totalFiles, 0);
     
-    const allSelectedDates = selectedData.flatMap(p => p.visitDates).sort();
     let exportName = `Export_${Date.now()}`;
-    if (allSelectedDates.length > 0) {
-      const minDate = allSelectedDates[0].replace(/-/g, '');
-      const maxDate = allSelectedDates[allSelectedDates.length - 1].replace(/-/g, '');
-      exportName = minDate === maxDate ? `Export_${minDate}` : `Export_${minDate}_to_${maxDate}`;
+    
+    if (selectedIds.size === 1) {
+       exportName = selectedData[0].folderName;
+    } else {
+       const allSelectedDates = selectedData.flatMap(p => p.visitDates).sort();
+       if (allSelectedDates.length > 0) {
+         const minDate = allSelectedDates[0].replace(/-/g, '');
+         const maxDate = allSelectedDates[allSelectedDates.length - 1].replace(/-/g, '');
+         exportName = minDate === maxDate ? `Projects_${minDate}` : `Projects_${minDate}_to_${maxDate}`;
+       }
     }
 
-    Alert.alert("Share Multiple Projects", `You selected ${selectedIds.size} projects.\nTotal Size: ~${formatBytes(totalBytes)}`, [
+    Alert.alert("Share Selected Projects", `Sharing ${selectedIds.size} project(s).\nTotal Size: ~${formatBytes(totalBytes)}`, [
       { text: "Cancel", style: "cancel" },
       { text: "Share as Link (Cloud)", onPress: () => executeBulkShare('link', exportName, totalBytes, totalFiles) },
       { text: "Share as ZIP (Local)", onPress: () => executeBulkShare('local', exportName, totalBytes, totalFiles) }
@@ -272,11 +314,28 @@ export default function DashboardTab() {
 
       if (type === 'link') {
         const currentMeta = { totalFiles, totalSize, maxModTime: Date.now() };
-        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, currentMeta, (status) => {
+        
+        let uName = 'AnonymousUser';
+        try {
+          const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+          if (sessionStr) {
+            const parsedSession = JSON.parse(sessionStr);
+            const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+            if (userSnap.exists() && userSnap.data().username) {
+              uName = userSnap.data().username;
+            } else {
+              uName = parsedSession.userId;
+            }
+          }
+        } catch (e) {}
+
+        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, uName, currentMeta, (status) => {
            setBulkExportStatus(status);
         });
         
-        await Share.share({ message: `Multi-Project Export (${selectedIds.size} Projects):\n${expectedUrl}\n\nNote: The link might not be fully ready until the files are uploaded completely by the sender.` });
+        const projectList = Array.from(selectedIds).map(id => `- ${id}`).join('\n');
+        
+        await Share.share({ message: `Project Export Link:\n${expectedUrl}\n\nProjects Included:\n${projectList}\n\nNote: The link might take a minute to activate while files upload.` });
         
         startBackgroundUpload().finally(async () => {
           await FileSystem.deleteAsync(stagingPath, { idempotent: true });
@@ -297,7 +356,7 @@ export default function DashboardTab() {
       }
     } catch (e) {
       await FileSystem.deleteAsync(stagingPath, { idempotent: true }).catch(() => {});
-      Alert.alert("Export Failed", "Failed to package multiple projects.");
+      Alert.alert("Export Failed", "Failed to package projects.");
       setIsProcessingAction(false); setBulkExportStatus('');
     }
   };
@@ -335,8 +394,6 @@ export default function DashboardTab() {
 
     const isSelected = selectedIds.has(item.folderName);
     const hasKml = kmlProjects.has(item.folderName);
-
-    // Generate accurate time string from maxModTime
     const exactTime = new Date(item.maxModTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     return (
@@ -433,7 +490,7 @@ export default function DashboardTab() {
             <View style={styles.sortGroup}>
               <TouchableOpacity style={[styles.toolbarBtn, { borderTopRightRadius: 0, borderBottomRightRadius: 0, marginRight: 0 }]} onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}>
                 <Ionicons name="swap-vertical" size={16} color="#475569" />
-                <Text style={styles.toolbarBtnText}>{sortBy}</Text>
+                <Text style={styles.toolbarBtnText}>{getShortSortName(sortBy)}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.toolbarBtn, { borderTopLeftRadius: 0, borderBottomLeftRadius: 0, paddingHorizontal: 6, marginLeft: 1 }]} onPress={() => setSortOrder(p => p === 'asc' ? 'desc' : 'asc')}>
                 <Ionicons name={sortOrder === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2563EB" />

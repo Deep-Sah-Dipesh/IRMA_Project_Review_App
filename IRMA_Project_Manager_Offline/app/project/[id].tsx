@@ -8,9 +8,12 @@ import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
 import { zip } from 'react-native-zip-archive';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
+import { doc, getDoc } from 'firebase/firestore';
+
 import VisitManager from '../../components/VisitManager';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
-
+import { db } from '../../utils/firebaseConfig';
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 import { useUserStore } from '../../store/userStore'; 
@@ -35,9 +38,8 @@ const formatBytes = (bytes: number) => {
 export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
-  const db = SQLite.useSQLiteContext();
+  const sqlDb = SQLite.useSQLiteContext();
   
-  // Safely decode the URI to reconstruct slashes (e.g., IRMA/2023)
   const rawId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
   const rawTenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
   
@@ -69,16 +71,16 @@ export default function ProjectDetails() {
     try {
       let projData;
       if (tenderId && tenderId !== 'UNKNOWN_TENDER' && tenderId.trim() !== '') {
-        projData = db.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? AND t.tender_id = ? LIMIT 1`, [projectId, tenderId]);
+        projData = sqlDb.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? AND t.tender_id = ? LIMIT 1`, [projectId, tenderId]);
       }
       if (!projData) {
-        projData = db.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? LIMIT 1`, [projectId]);
+        projData = sqlDb.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? LIMIT 1`, [projectId]);
       }
 
       if (!projData) { setProject(null); setLoading(false); return; }
       setProject(projData);
 
-      const obsData = db.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
+      const obsData = sqlDb.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
       if (obsData && obsData.length > 0) {
         const sortedObs = [...obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
         setLatestObs([sortedObs[0]]);
@@ -88,7 +90,7 @@ export default function ProjectDetails() {
     } catch (error: any) {
       setDbError(`Database Interruption: ${error.message}`); setLoading(false);
     }
-  }, [projectId, tenderId, db]);
+  }, [projectId, tenderId, sqlDb]);
 
   useEffect(() => {
     let isMounted = true;
@@ -104,7 +106,6 @@ export default function ProjectDetails() {
     return () => { isMounted = false; clearTimeout(timeout); };
   }, [loadData, projectId, sanitizedFolder]);
 
-  // FIXED: Exclusively use router.back() to prevent native stack corruption
   const handleBackNavigation = () => router.back();
 
   const getDirectoryMetadata = async (folderPath: string) => {
@@ -145,7 +146,23 @@ export default function ProjectDetails() {
       isExportingRef.current = true;
       setExportState({ active: true, status: 'Preparing Cloud Sync...', isCancellable: false });
 
-      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, currentMeta, (status) => {
+      let uName = 'AnonymousUser';
+      try {
+        const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+        if (sessionStr) {
+          const parsedSession = JSON.parse(sessionStr);
+          const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+          if (userSnap.exists() && userSnap.data().username) {
+            uName = userSnap.data().username;
+          } else {
+            uName = parsedSession.userId;
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to fetch user details", e);
+      }
+
+      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, uName, currentMeta, (status) => {
          setExportState(prev => ({ ...prev, status }));
       });
       
@@ -277,7 +294,6 @@ export default function ProjectDetails() {
                 <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
               </View>
 
-              {/* Rigid Locate Button Layout */}
               <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
                 <View style={{ flex: 1, marginRight: 5 }}>
                   {project.latitude && project.longitude && (
