@@ -4,7 +4,7 @@
     "slug": "IRMA_Project_Manager_Offline",
     "version": "1.0.0",
     "runtimeVersion": {
-      "policy": "sdkVersion"
+      "policy": "appVersion"
     },
     "orientation": "portrait",
     "owner": "deep_sah",

@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, Text, TouchableOpacity, FlatList, TextInput, StyleSheet, Keyboard, Modal, TouchableWithoutFeedback } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useUserStore } from '../../store/userStore';
+import { getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 
 // Helper for consistent folder names
 const getFolderName = (pId: string, tId: string) => {
@@ -37,16 +38,61 @@ export default function PlannerTab() {
   const [collapsedPendingUlbs, setCollapsedPendingUlbs] = useState<Set<string>>(new Set());
   const [expandedPlanningUlbs, setExpandedPlanningUlbs] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    const scanVisited = async () => {
-      try {
-        const baseDir = FileSystem.documentDirectory + 'projects/';
-        const folders = await FileSystem.readDirectoryAsync(baseDir).catch(() => []);
-        setVisitedSet(new Set(folders));
-      } catch(e) {}
-    };
-    scanVisited();
-  }, [activeTab]);
+  // Smart Scanning initialized via FocusEffect to instantly refresh counts after adding media
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      
+      const scanVisited = async () => {
+        try {
+          const validVisited = new Set<string>();
+          
+          // 1. Check for valid KML Location Pins
+          const kmlProjects = await getProjectsWithLocalKmls().catch(() => new Set<string>());
+          kmlProjects.forEach(id => validVisited.add(id));
+
+          // 2. Deep scan projects directory for actual media files (ignoring empty folders)
+          const baseDir = FileSystem.documentDirectory + 'projects/';
+          const folders = await FileSystem.readDirectoryAsync(baseDir).catch(() => []);
+          
+          for (const folder of folders) {
+             if (validVisited.has(folder)) continue;
+             
+             const folderPath = `${baseDir}${folder}/`;
+             let hasFiles = false;
+             
+             const checkHasFiles = async (currentPath: string) => {
+                if (hasFiles) return;
+                const items = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
+                for (const item of items) {
+                   if (hasFiles) return;
+                   const fullPath = `${currentPath}${item}`;
+                   const info = await FileSystem.getInfoAsync(fullPath);
+                   if (info.isDirectory) {
+                      await checkHasFiles(`${fullPath}/`);
+                   } else {
+                      // Validate if file is a real captured media (not just JSON metadata or .keep)
+                      if (!item.endsWith('.json') && item !== '.keep') {
+                         hasFiles = true;
+                      }
+                   }
+                }
+             };
+
+             await checkHasFiles(folderPath);
+             if (hasFiles) {
+                validVisited.add(folder);
+             }
+          }
+          
+          if (isMounted) setVisitedSet(validVisited);
+        } catch(e) {}
+      };
+      
+      scanVisited();
+      return () => { isMounted = false; };
+    }, [])
+  );
 
   useEffect(() => {
     const loadProjects = async () => {

@@ -270,7 +270,7 @@ export default function ProjectDetails() {
          </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={globalStyles.scrollContent}>
+      <ScrollView contentContainerStyle={[globalStyles.scrollContent, { paddingBottom: 150 }]}>
         {activeTab === 'details' && (
           <View>
             <View style={globalStyles.card}>
@@ -351,7 +351,7 @@ export default function ProjectDetails() {
                     {displayedPrevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
                     
                     {prevObs.length > 5 && (
-                      <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={[styles.viewMoreBtn, showAllObs && { marginTop: 8 }]}>
+                      <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={styles.viewMoreBtn}>
                         <Text style={styles.viewMoreText}>{showAllObs ? 'Collapse Observations' : `View All Previous Observations (${prevObs.length})`}</Text>
                         <Ionicons name={showAllObs ? "chevron-up" : "chevron-down"} size={14} color="#2563EB" style={{marginLeft: 4}}/>
                       </TouchableOpacity>
@@ -359,9 +359,9 @@ export default function ProjectDetails() {
                   </View>
                 )}
 
-                <View style={styles.endOfObservationsMarker}>
+                {/* <View style={styles.endOfObservationsMarker}>
                    <Text style={{ color: '#94A3B8', fontSize: 11, fontStyle: 'italic', letterSpacing: 2 }}>--------------- end of observations ---------------</Text>
-                </View>
+                </View> */}
               </View>
             )}
           </View>
@@ -488,8 +488,10 @@ const styles = StyleSheet.create({
   iconBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   
   subSectionTitle: { fontSize: 13, fontWeight: '700', color: '#64748B', marginBottom: 10, marginTop: 5, textTransform: 'uppercase' },
-  viewMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, marginTop: -5, marginBottom: 5, backgroundColor: '#EFF6FF', borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
+  
+  viewMoreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, marginTop: 10, marginBottom: 20, backgroundColor: '#EFF6FF', borderRadius: 8, borderWidth: 1, borderColor: '#BFDBFE' },
   viewMoreText: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },
+  
   obsCard: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0', borderLeftWidth: 5, borderLeftColor: '#334155' },
   obsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   obsDate: { fontSize: 12, color: '#64748B', fontWeight: '600' },

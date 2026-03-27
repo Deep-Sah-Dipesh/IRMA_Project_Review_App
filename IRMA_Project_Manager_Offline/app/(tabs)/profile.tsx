@@ -118,7 +118,7 @@ export default function ProfileTab() {
   };
 
   const handleLogout = () => {
-    Alert.alert("Logout Securely", "Keep your visit data secure by logging out of the app. This will clear the local workspace. Are you sure?", [
+    Alert.alert("Logout Securely", "Keep your visit data secure by logging out of the app. \n\nNote: Just make sure you remember your password before logging out or contact @admin for support!", [
       { text: "Cancel", style: "cancel" },
       { text: "Logout", style: "destructive", onPress: async () => {
           await wipeSecureDatabase();

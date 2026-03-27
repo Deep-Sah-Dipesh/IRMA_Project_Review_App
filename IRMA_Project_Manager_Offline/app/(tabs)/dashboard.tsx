@@ -11,7 +11,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 import { globalStyles } from '../../styles/globalStyles';
-import { shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
+import { getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -73,7 +73,7 @@ export default function DashboardTab() {
     let mediaStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
     
     const traverse = async (currentPath: string, parentDir: string = '') => {
-      const files = await FileSystem.readDirectoryAsync(currentPath);
+      const files = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
       for (const file of files) {
         const fullPath = `${currentPath}${file}`;
         const info = await FileSystem.getInfoAsync(fullPath);
@@ -93,14 +93,30 @@ export default function DashboardTab() {
           if (info.modificationTime && info.modificationTime > maxModTime) maxModTime = info.modificationTime;
           
           if (!file.endsWith('.json')) {
-            const ext = file.split('.').pop()?.toLowerCase();
-            if (file.endsWith('.kml')) mediaStats.kmls++;
-            else if (parentDir === 'geotagged_captures') mediaStats.geo++;
-            else if (parentDir === 'notes') { if (ext === 'txt') mediaStats.text++; else mediaStats.audio++; }
-            else if (parentDir === 'attachments') {
-              if (['mp4','mov'].includes(ext!)) mediaStats.vids++;
-              else if (['jpg','png','jpeg'].includes(ext!)) mediaStats.photos++;
-              else mediaStats.docs++;
+            const lowerFile = file.toLowerCase();
+            const ext = lowerFile.split('.').pop() || '';
+            const normalizedParent = parentDir.toLowerCase();
+            
+            if (lowerFile.endsWith('.kml')) {
+               mediaStats.kmls++; 
+            } else if (['txt'].includes(ext)) {
+               mediaStats.text++;
+            } else if (['m4a', 'wav', 'mp3'].includes(ext)) {
+               mediaStats.audio++;
+            } else if (['pdf', 'doc', 'docx', 'csv', 'xls', 'xlsx'].includes(ext)) {
+               mediaStats.docs++;
+            } else if (['mp4', 'mov'].includes(ext)) {
+               mediaStats.vids++;
+            } else if (['jpg', 'png', 'jpeg'].includes(ext)) {
+               if (normalizedParent.includes('geotag')) {
+                  mediaStats.geo++;
+               } else {
+                  mediaStats.photos++;
+               }
+            } else {
+               if (normalizedParent.includes('attachment') || normalizedParent.includes('document')) {
+                  mediaStats.docs++;
+               }
             }
           }
         }
@@ -151,6 +167,41 @@ export default function DashboardTab() {
     }
   };
 
+  // Dedicated logic to find the absolute newest KML in a dynamic directory structure
+  const handleShareLatestKml = async (folderName: string) => {
+    try {
+      const baseProjDir = `${FileSystem.documentDirectory}projects/${folderName}/`;
+      let latestKmlUri = '';
+      let latestTime = 0;
+
+      const findLatestKml = async (currentPath: string) => {
+        const files = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
+        for (const file of files) {
+          const fullPath = `${currentPath}${file}`;
+          const info = await FileSystem.getInfoAsync(fullPath);
+          if (info.isDirectory) {
+            await findLatestKml(`${fullPath}/`);
+          } else if (file.toLowerCase().endsWith('.kml')) {
+            if (info.modificationTime && info.modificationTime > latestTime) {
+              latestTime = info.modificationTime;
+              latestKmlUri = fullPath;
+            }
+          }
+        }
+      };
+
+      await findLatestKml(baseProjDir);
+
+      if (latestKmlUri) {
+        await Sharing.shareAsync(latestKmlUri, { dialogTitle: 'Share Project Location (KML)' });
+      } else {
+        Alert.alert("Not Found", "No KML file found for this project.");
+      }
+    } catch (e) {
+      Alert.alert("Error", "Could not share KML file.");
+    }
+  };
+
   const processedData = useMemo(() => {
     let filtered = recentProjects.filter(p => {
       if (!search) return true;
@@ -171,40 +222,39 @@ export default function DashboardTab() {
     }
 
     if (sortBy === 'Date-Time') {
-      const grouped: any[] = [];
+      const dateStatsMap: Record<string, any> = {};
+      
+      filtered.forEach(p => {
+         if (!dateStatsMap[p.latestDate]) {
+            dateStatsMap[p.latestDate] = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
+         }
+         const st = dateStatsMap[p.latestDate];
+         st.photos += p.mediaStats?.photos || 0;
+         st.vids += p.mediaStats?.vids || 0;
+         st.audio += p.mediaStats?.audio || 0;
+         st.text += p.mediaStats?.text || 0;
+         st.docs += p.mediaStats?.docs || 0;
+         st.geo += p.mediaStats?.geo || 0;
+         st.kmls += p.mediaStats?.kmls || 0;
+      });
+
+      const finalData: any[] = [];
       let currentDate = '';
-      let dateStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
       
       filtered.forEach(p => {
          if (p.latestDate !== currentDate) {
-            if (currentDate !== '') {
-               grouped.push({ isHeader: true, date: currentDate, id: `header_${currentDate}`, stats: { ...dateStats } });
-            }
             currentDate = p.latestDate;
-            dateStats = { photos: 0, vids: 0, audio: 0, text: 0, docs: 0, geo: 0, kmls: 0 };
+            finalData.push({ 
+               isHeader: true, 
+               date: currentDate, 
+               id: `header_${currentDate}`, 
+               stats: dateStatsMap[currentDate] 
+            });
          }
-         
-         dateStats.photos += p.mediaStats?.photos || 0;
-         dateStats.vids += p.mediaStats?.vids || 0;
-         dateStats.audio += p.mediaStats?.audio || 0;
-         dateStats.text += p.mediaStats?.text || 0;
-         dateStats.docs += p.mediaStats?.docs || 0;
-         dateStats.geo += p.mediaStats?.geo || 0;
-         dateStats.kmls += p.mediaStats?.kmls || 0;
-         
-         grouped.push({ ...p, isHeader: false, id: p.folderName });
+         finalData.push({ ...p, isHeader: false, id: p.folderName });
       });
       
-      if (currentDate !== '') {
-         grouped.push({ isHeader: true, date: currentDate, id: `header_${currentDate}`, stats: dateStats });
-      }
-      
-      return grouped.sort((a,b) => {
-         const dateA = a.isHeader ? a.date : a.latestDate;
-         const dateB = b.isHeader ? b.date : b.latestDate;
-         if (dateA === dateB) return a.isHeader ? -1 : 1;
-         return sortOrder === 'asc' ? dateA.localeCompare(dateB) : dateB.localeCompare(dateA);
-      });
+      return finalData;
     }
     
     return filtered.map(p => ({ ...p, isHeader: false, id: p.folderName }));
@@ -393,7 +443,10 @@ export default function DashboardTab() {
     }
 
     const isSelected = selectedIds.has(item.folderName);
-    const hasKml = kmlProjects.has(item.folderName);
+    
+    // Validates whether the button should show, prioritizing the deep-scan over the legacy function
+    const hasKml = kmlProjects.has(item.folderName) || (item.mediaStats?.kmls > 0);
+    
     const exactTime = new Date(item.maxModTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     return (
@@ -437,10 +490,10 @@ export default function DashboardTab() {
           {hasKml && (
              <TouchableOpacity 
                style={[globalStyles.locateGreenBtn, { flex: 0, paddingHorizontal: 12, paddingVertical: 8 }]} 
-               onPress={() => shareLocalKml(item.project_id, item.tender_id)}
+               onPress={() => handleShareLatestKml(item.folderName)}
              >
                <Ionicons name="earth" size={16} color="white" />
-               <Text style={globalStyles.locateBtnText}>KML</Text>
+               <Text style={globalStyles.locateBtnText}>Locate-KML</Text>
              </TouchableOpacity>
           )}
         </View>
