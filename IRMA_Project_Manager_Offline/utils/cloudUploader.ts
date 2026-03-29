@@ -1,6 +1,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
 import { zip } from 'react-native-zip-archive';
+import { doc, getDoc } from 'firebase/firestore'; // Added to fetch unique ID
+import { db } from './firebaseConfig'; // Added to access Firestore
 
 const FIREBASE_BUCKET = 'irma-project-manager-offline.firebasestorage.app'; 
 const SYNC_CACHE_FILE = `${FileSystem.documentDirectory}cloud_sync_cache.json`;
@@ -45,7 +47,7 @@ const updateSyncCache = async (exportKey: string, meta: any, url: string) => {
 export const generateCloudLinkAndUpload = async (
   exportName: string,
   sourceFolderPath: string,
-  userName: string, 
+  userId: string, 
   currentMeta: { totalFiles: number, totalSize: number, maxModTime: number },
   onProgress: (status: string) => void
 ): Promise<{ expectedUrl: string, startBackgroundUpload: () => Promise<void>, isCached: boolean }> => {
@@ -54,12 +56,23 @@ export const generateCloudLinkAndUpload = async (
   const targetZipPath = `${FileSystem.cacheDirectory}${zipFileName}`;
   
   const rawDeviceId = Device.osBuildId || Device.designName || 'UnknownDevice';
-  const rawUserName = userName || 'AnonymousUser';
 
-  const cleanUserName = rawUserName.replace(/\s+/g, '');
+  // Fetch the actual uniqueUserId from Firestore using the passed session ID (email)
+  let actualUserId = userId;
+  try {
+    const userSnap = await getDoc(doc(db, 'users', userId));
+    if (userSnap.exists() && userSnap.data().uniqueUserId) {
+      actualUserId = userSnap.data().uniqueUserId;
+    }
+  } catch (e) {
+    console.warn("Could not fetch uniqueUserId, falling back to session ID", e);
+  }
+
+  // Sanitize the dynamically fetched unique User ID
+  const cleanUserId = actualUserId.replace(/\s+/g, '');
   const cleanDeviceId = rawDeviceId.replace(/[\/\\]/g, '_');
   
-  const firebaseStoragePath = `Project_Exports/${cleanUserName}/${cleanDeviceId}/${zipFileName}`;
+  const firebaseStoragePath = `Project_Exports/${cleanUserId}/${cleanDeviceId}/${zipFileName}`;
   const encodedPath = encodeURIComponent(firebaseStoragePath);
   
   const downloadToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -67,7 +80,7 @@ export const generateCloudLinkAndUpload = async (
   const uploadEndpoint = `https://firebasestorage.googleapis.com/v0/b/${FIREBASE_BUCKET}/o?name=${encodedPath}`;
 
   const cache = await getSyncCache();
-  const cacheKey = `${cleanUserName}_${exportName}`;
+  const cacheKey = `${cleanUserId}_${exportName}`;
   const cachedData = cache[cacheKey];
   
   if (cachedData && cachedData.totalFiles === currentMeta.totalFiles && cachedData.totalSize === currentMeta.totalSize && cachedData.maxModTime === currentMeta.maxModTime) {

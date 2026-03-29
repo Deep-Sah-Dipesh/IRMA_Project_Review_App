@@ -1,41 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Modal, FlatList } from 'react-native';
 import * as Device from 'expo-device';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../utils/firebaseConfig';
 import { Ionicons } from '@expo/vector-icons';
 
 type AuthMode = 'login' | 'signup' | 'otp';
 interface AuthScreenProps { onLoginSuccess: (userId: string) => void; }
 
-// Updated with the comprehensive list from your attachments
 const REGIONS = [
-  'Arunachal Pradesh',
-  'Assam',
-  'Chandigarh',
-  'Delhi',
-  'Gujarat',
-  'Haryana',
-  'Himachal Pradesh',
-  'Jammu and Kashmir',
-  'Ladakh',
-  'Manipur',
-  'Meghalaya',
-  'Mizoram',
-  'Nagaland',
-  'Punjab',
-  'Sikkim',
-  'Tripura',
-  'Uttarakhand'
+  'Arunachal Pradesh', 'Assam', 'Chandigarh', 'Delhi', 'Gujarat', 
+  'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Ladakh', 
+  'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Punjab', 
+  'Sikkim', 'Tripura', 'Uttarakhand'
 ];
 
 export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [loading, setLoading] = useState(false);
+  const [processingMsg, setProcessingMsg] = useState(''); // Added to show the registering message box
 
+  const [loginIdentifier, setLoginIdentifier] = useState(''); // Replaced generic email for login to accept Email/Phone/UserID
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [username, setUsername] = useState('');
+  const [fullName, setFullName] = useState(''); 
+  const [uniqueUserId, setUniqueUserId] = useState(''); 
   const [phone, setPhone] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [workRegion, setWorkRegion] = useState('Select Region');
@@ -45,7 +34,6 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [expectedOtp, setExpectedOtp] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
 
-  // FIXED: Removed resendTimer from dependencies to prevent interval remounting every second
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (mode === 'otp') {
@@ -59,75 +47,130 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   }, [mode]);
 
   const handleLogin = async () => {
-    if (!email || !password) return Alert.alert("Required", "Please fill in both email and password.");
+    if (!loginIdentifier || !password) return Alert.alert("Required", "Please fill in all credentials.");
     setLoading(true);
     try {
-      const userId = email.toLowerCase().trim();
-      const userSnap = await getDoc(doc(db, 'users', userId));
+      const searchId = loginIdentifier.toLowerCase().trim();
+      let userDocId = searchId;
+      
+      // 1. First try matching the document ID directly (Email is used as doc ID in signup)
+      let userSnap = await getDoc(doc(db, 'users', searchId));
 
-      // Added optional chaining for data() to ensure TS/JS safety
+      // 2. If not found by email/doc ID, query by uniqueUserId or phone
+      if (!userSnap.exists()) {
+        const uidQuery = query(collection(db, 'users'), where('uniqueUserId', '==', searchId));
+        const uidSnap = await getDocs(uidQuery);
+        
+        if (!uidSnap.empty) {
+          userSnap = uidSnap.docs[0] as any;
+          userDocId = uidSnap.docs[0].id;
+        } else {
+          const phoneQuery = query(collection(db, 'users'), where('phone', '==', searchId));
+          const phoneSnap = await getDocs(phoneQuery);
+          if (!phoneSnap.empty) {
+            userSnap = phoneSnap.docs[0] as any;
+            userDocId = phoneSnap.docs[0].id;
+          }
+        }
+      }
+
       if (!userSnap.exists() || userSnap.data()?.password !== password) {
-        Alert.alert("Access Denied", "Incorrect email or password.");
+        Alert.alert("Access Denied", "Incorrect credentials.");
         setLoading(false); return;
       }
-      onLoginSuccess(userId);
+      onLoginSuccess(userDocId);
     } catch (e) { Alert.alert("Error", "Login failed. Please check your internet connection."); } 
     finally { setLoading(false); }
   };
 
-  const triggerOtpSequence = () => {
-    const mockOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    setExpectedOtp(mockOtp);
-    setResendTimer(30);
-    setMode('otp');
-    Alert.alert("Device Registered", `Your Secure OTP is: ${mockOtp}`);
-  };
-
   const handleSendOtp = async () => {
-    if (!email || !username || !phone || !password) return Alert.alert("Required", "All fields are necessary to create an account.");
+    if (!email || !fullName || !uniqueUserId || !phone || !password) return Alert.alert("Required", "All fields are necessary to create an account.");
     if (password !== confirmPassword) return Alert.alert("Mismatch", "The passwords you entered do not match.");
     if (workRegion === 'Select Region') return Alert.alert("Required", "Please select your primary work region.");
     
+    // Strict regex to ensure domains like .com/.net are typed correctly (minimum 2 chars after the dot)
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(email)) {
+      return Alert.alert("Invalid Email", "Please enter a valid and proper email address.");
+    }
+
     setLoading(true);
     try {
-      const userId = email.toLowerCase().trim();
-      const userSnap = await getDoc(doc(db, 'users', userId));
+      const emailId = email.toLowerCase().trim();
+      const formattedUserId = uniqueUserId.toLowerCase().trim();
+
+      const userSnap = await getDoc(doc(db, 'users', emailId));
       if (userSnap.exists()) {
-        Alert.alert("Conflict", "An account with this email already exists.");
-        setLoading(false); return;
+        setLoading(false); 
+        return Alert.alert("Conflict", "An account with this email already exists.");
+      }
+
+      const phoneQuery = query(collection(db, 'users'), where('phone', '==', phone));
+      const phoneSnap = await getDocs(phoneQuery);
+      if (!phoneSnap.empty) {
+        setLoading(false);
+        return Alert.alert("Conflict", "This mobile number is already linked to an existing account.");
+      }
+
+      const userIdQuery = query(collection(db, 'users'), where('uniqueUserId', '==', formattedUserId));
+      const userIdSnap = await getDocs(userIdQuery);
+      if (!userIdSnap.empty) {
+        setLoading(false);
+        return Alert.alert("Conflict", "This User ID is already taken. Please try a different one.");
       }
       
-      // Simulate network delay for realistic UX
+      // Show custom message box for a few seconds before generating OTP alert
+      setProcessingMsg('Registering your device and fetching secure OTP...');
       setTimeout(() => {
+        setProcessingMsg('');
         setLoading(false);
-        triggerOtpSequence();
-      }, 2000);
+        const mockOtp = Math.floor(1000 + Math.random() * 9000).toString();
+        setExpectedOtp(mockOtp);
+        
+        // Final OK button moves user to OTP screen
+        Alert.alert(
+          "Device Registered", 
+          `Your Secure OTP is: ${mockOtp}`,
+          [{ text: "OK", onPress: () => {
+              setResendTimer(30);
+              setMode('otp');
+          }}]
+        );
+      }, 2500);
+      
     } catch (e) { 
-      Alert.alert("Error", "Failed to initiate registration."); 
+      Alert.alert("Error", "Failed to initiate registration. Check connection."); 
       setLoading(false); 
     }
   };
 
   const handleResendOtp = () => {
     if (resendTimer > 0) return;
-    triggerOtpSequence();
+    const mockOtp = Math.floor(1000 + Math.random() * 9000).toString();
+    setExpectedOtp(mockOtp);
+    Alert.alert(
+      "OTP Resent", 
+      `Your new Secure OTP is: ${mockOtp}`,
+      [{ text: "OK", onPress: () => setResendTimer(30) }]
+    );
   };
 
   const handleVerifyAndSignup = async () => {
     if (otpCode !== expectedOtp) return Alert.alert("Invalid Code", "The OTP entered is incorrect.");
     setLoading(true);
     try {
-      const userId = email.toLowerCase().trim();
+      const emailId = email.toLowerCase().trim();
+      const formattedUserId = uniqueUserId.toLowerCase().trim();
       const currentDeviceId = Device.osBuildId || Device.designName || 'unknown_device';
       
-      await setDoc(doc(db, 'users', userId), {
-        username, email: userId, phone, password, workRegion,
+      await setDoc(doc(db, 'users', emailId), {
+        fullName, uniqueUserId: formattedUserId, email: emailId, phone, password, workRegion,
         isActive: true, multiAccess: false, activeDeviceIds: [currentDeviceId],
         createdAt: new Date().toISOString()
       });
       
       Alert.alert("Success", "Your account has been created securely.");
-      onLoginSuccess(userId);
+      onLoginSuccess(emailId);
     } catch (e) { Alert.alert("Error", "Failed to finalize account creation."); } 
     finally { setLoading(false); }
   };
@@ -143,11 +186,11 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
           {mode === 'login' && (
             <>
               <Text style={styles.title}>Welcome Back</Text>
-              <Text style={styles.subtitle}>Enter your registered email and password to securely access your project workspace.</Text>
+              <Text style={styles.subtitle}>Enter your credentials to securely access your project workspace.</Text>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Email Address</Text>
-                <TextInput style={styles.input} placeholder="e.g. agent@irma.com" placeholderTextColor="#64748B" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
+                <Text style={styles.label}>Email, User ID, or Phone</Text>
+                <TextInput style={styles.input} placeholder="e.g. agent@irma.com or john_doe" placeholderTextColor="#64748B" autoCapitalize="none" value={loginIdentifier} onChangeText={setLoginIdentifier} />
               </View>
 
               <View style={styles.inputGroup}>
@@ -172,7 +215,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
               <Text style={styles.subtitle}>Register to sync field reports and safely manage your device access.</Text>
 
               <View style={styles.inputGroup}>
-                <TextInput style={styles.input} placeholder="Full Name" placeholderTextColor="#64748B" value={username} onChangeText={setUsername} />
+                <TextInput style={styles.input} placeholder="Full Name" placeholderTextColor="#64748B" value={fullName} onChangeText={setFullName} />
               </View>
               <View style={styles.inputGroup}>
                 <TextInput style={styles.input} placeholder="Email Address" placeholderTextColor="#64748B" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
@@ -188,6 +231,11 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
                 </TouchableOpacity>
               </View>
 
+              {/* Unique User ID moved below Region Selection */}
+              <View style={styles.inputGroup}>
+                <TextInput style={styles.input} placeholder="Create Unique User ID" placeholderTextColor="#64748B" autoCapitalize="none" value={uniqueUserId} onChangeText={setUniqueUserId} />
+              </View>
+
               <View style={styles.inputGroup}>
                 <TextInput style={styles.input} placeholder="Create Password" placeholderTextColor="#64748B" secureTextEntry value={password} onChangeText={setPassword} />
               </View>
@@ -196,7 +244,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
               </View>
 
               <TouchableOpacity style={styles.primaryBtn} onPress={handleSendOtp} disabled={loading}>
-                {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.btnText}>Send Verification Code</Text>}
+                <Text style={styles.btnText}>Send Verification Code</Text>
               </TouchableOpacity>
 
               <View style={styles.switchModeContainer}>
@@ -236,6 +284,16 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
           )}
         </View>
       </ScrollView>
+
+      {/* Processing Message Modal during OTP generation */}
+      <Modal visible={!!processingMsg} transparent animationType="fade">
+        <View style={styles.processingOverlay}>
+          <View style={styles.processingBox}>
+            <ActivityIndicator size="large" color="#3B82F6" style={{ marginBottom: 15 }} />
+            <Text style={styles.processingText}>{processingMsg}</Text>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={showRegionModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -284,6 +342,10 @@ const styles = StyleSheet.create({
   linkText: { color: '#60A5FA', fontSize: 14, fontWeight: 'bold' },
   cancelText: { color: '#EF4444', fontSize: 14, fontWeight: 'bold' },
   
+  processingOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  processingBox: { backgroundColor: '#1E293B', padding: 30, borderRadius: 16, alignItems: 'center', width: '80%', borderWidth: 1, borderColor: '#334155' },
+  processingText: { color: '#F8FAFC', fontSize: 16, fontWeight: '600', textAlign: 'center' },
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1E293B', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '60%', paddingBottom: 20, borderWidth: 1, borderColor: '#334155' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, borderColor: '#334155' },

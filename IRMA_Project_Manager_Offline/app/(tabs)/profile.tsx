@@ -18,14 +18,16 @@ export default function ProfileTab() {
   const [saving, setSaving] = useState(false);
   const [userId, setUserId] = useState('');
   
-  // Store the push token for testing purposes
   const [pushToken, setPushToken] = useState<string | null>(null);
   
-  // User Data
+  // Added uniqueUserId and made email state editable
   const [name, setName] = useState('');
+  const [uniqueUserId, setUniqueUserId] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  
   const [isEditingPhone, setIsEditingPhone] = useState(false);
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
 
   // Password Change
   const [showPassModal, setShowPassModal] = useState(false);
@@ -47,7 +49,6 @@ export default function ProfileTab() {
         const session = JSON.parse(sessionStr);
         setUserId(session.userId);
         
-        // Register for push notifications and save to Firestore
         const token = await registerAndSavePushToken(session.userId);
         if (token) setPushToken(token);
         
@@ -55,7 +56,8 @@ export default function ProfileTab() {
         const snap = await getDoc(userRef);
         if (snap.exists()) {
           const data = snap.data();
-          setName(data.username || '');
+          setName(data.fullName || data.username || ''); // Support updated naming convention
+          setUniqueUserId(data.uniqueUserId || ''); // Fetches unique handle
           setEmail(data.email || '');
           setPhone(data.phone || '');
         }
@@ -79,6 +81,23 @@ export default function ProfileTab() {
       Alert.alert("Success", "Contact number updated securely.");
     } catch (e) {
       Alert.alert("Error", "Could not update phone number.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Dedicated save handler for editing the email address
+  const handleSaveEmail = async () => {
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(email)) return Alert.alert("Invalid", "Please enter a valid email address.");
+    
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'users', userId), { email: email.toLowerCase().trim() });
+      setIsEditingEmail(false);
+      Alert.alert("Success", "Email address updated securely.");
+    } catch (e) {
+      Alert.alert("Error", "Could not update email address.");
     } finally {
       setSaving(false);
     }
@@ -128,7 +147,6 @@ export default function ProfileTab() {
     ]);
   };
 
-  // Test Notification Handler
   const handleTestNotification = async () => {
     if (!pushToken) {
       Alert.alert("Token Missing", "Please ensure you are on a physical device and have granted notification permissions.");
@@ -148,7 +166,6 @@ export default function ProfileTab() {
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 60, paddingBottom: 60 }}>
       <View style={styles.header}>
         <Text style={styles.title}>User Profile</Text>
-        {/* Updated Notification Bell to trigger test notification */}
         <TouchableOpacity 
           style={styles.bellBtn} 
           onPress={handleTestNotification}
@@ -171,9 +188,27 @@ export default function ProfileTab() {
           <View style={styles.lockedBox}><Text style={styles.lockedText}>{name}</Text></View>
         </View>
 
+        {/* Added Unique User ID inside locked fields */}
         <View style={{ marginBottom: 15 }}>
-          <Text style={styles.subLabel}>Registered Email</Text>
-          <View style={styles.lockedBox}><Text style={styles.lockedText}>{email}</Text></View>
+          <Text style={styles.subLabel}>Unique User ID</Text>
+          <View style={styles.lockedBox}><Text style={styles.lockedText}>@{uniqueUserId}</Text></View>
+        </View>
+
+        <View style={{ marginBottom: 15 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+             <Text style={styles.subLabel}>Registered Email</Text>
+             <TouchableOpacity onPress={() => isEditingEmail ? handleSaveEmail() : setIsEditingEmail(true)}>
+               <Text style={{ color: '#2563EB', fontWeight: 'bold', fontSize: 12 }}>{isEditingEmail ? "SAVE" : "EDIT"}</Text>
+             </TouchableOpacity>
+          </View>
+          <TextInput 
+            style={[styles.inputBox, isEditingEmail ? { backgroundColor: '#FFF', borderColor: '#2563EB', borderWidth: 1 } : styles.lockedBox]} 
+            value={email} 
+            onChangeText={setEmail} 
+            editable={isEditingEmail} 
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
         </View>
 
         <View style={{ marginBottom: 5 }}>

@@ -59,7 +59,7 @@ export default function UpdateHandler() {
 
   const executeDownload = async () => {
     setStep('downloading');
-    setStatusMsg('Downloading latest payload...');
+    setStatusMsg('Downloading latest update...');
     startProgressBar();
     
     try {
