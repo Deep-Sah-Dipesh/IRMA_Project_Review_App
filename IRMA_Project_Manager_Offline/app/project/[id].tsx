@@ -11,12 +11,14 @@ import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { doc, getDoc } from 'firebase/firestore';
 
+const { StorageAccessFramework } = FileSystem;
+
 import VisitManager from '../../components/VisitManager';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
 import { db } from '../../utils/firebaseConfig';
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
-import { useUserStore } from '../../store/userStore'; 
+import { useUserStore } from '../../store/userStore';
 
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
@@ -39,6 +41,7 @@ export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
   const sqlDb = SQLite.useSQLiteContext();
+  const store = useUserStore(); // [FIX: Store initialized for isAlreadyPlanned check]
   
   const rawId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
   const rawTenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
@@ -46,6 +49,7 @@ export default function ProjectDetails() {
   const projectId = decodeURIComponent(rawId);
   const tenderId = decodeURIComponent(rawTenderId);
   
+  // Sanitize folder name exactly as the Dashboard logic does
   const sanitizedFolder = `${projectId}_${tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   
   const [activeTab, setActiveTab] = useState<'details' | 'visits'>('details');
@@ -53,6 +57,7 @@ export default function ProjectDetails() {
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
   const [hasKml, setHasKml] = useState(false);
+  const [lastVisited, setLastVisited] = useState<string | null>(null);
   
   const [latestObs, setLatestObs] = useState<any[]>([]);
   const [prevObs, setPrevObs] = useState<any[]>([]);
@@ -60,37 +65,99 @@ export default function ProjectDetails() {
   const [isScopeExpanded, setIsScopeExpanded] = useState(false);
   const [hasEdited, setHasEdited] = useState(false);
 
-  const store = useUserStore();
-  
   const [exportState, setExportState] = useState<{ active: boolean, status: string, isCancellable: boolean }>({ active: false, status: '', isCancellable: false });
   const isExportingRef = useRef(false);
 
-  const loadData = useCallback(() => {
+  // [FIX: Logic synced with Dashboard to ensure paths match the UID sandbox]
+  const getUserId = async () => {
+    try {
+      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+      if (sessionStr) {
+        const parsedSession = JSON.parse(sessionStr);
+        let uniqueId = parsedSession.userId;
+        try {
+          const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+          if (userSnap.exists() && userSnap.data().uniqueUserId) uniqueId = userSnap.data().uniqueUserId;
+        } catch (e) {}
+        return uniqueId;
+      }
+    } catch(e) {}
+    return 'AnonymousUser';
+  };
+
+  const loadData = useCallback(async () => {
     if (!projectId || projectId === 'UNKNOWN_PROJ') return;
     setLoading(true); setDbError(null);
     try {
-      let projData;
-      if (tenderId && tenderId !== 'UNKNOWN_TENDER' && tenderId.trim() !== '') {
-        projData = sqlDb.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? AND t.tender_id = ? LIMIT 1`, [projectId, tenderId]);
-      }
-      if (!projData) {
-        projData = sqlDb.getFirstSync(`SELECT t.*, pd.* FROM tenders t LEFT JOIN project_details pd ON t.project_id = pd.project_id WHERE t.project_id = ? LIMIT 1`, [projectId]);
-      }
+      const userId = await getUserId();
+      
+      // Query against the new snake_case schema created by the Python script
+      let tenderData: any = {};
+      try {
+         tenderData = sqlDb.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? AND tender_id = ? LIMIT 1`, [projectId, tenderId]);
+         if (!tenderData) {
+             tenderData = sqlDb.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? LIMIT 1`, [projectId]) || {};
+         }
+      } catch (e) { console.warn(e); }
 
-      if (!projData) { setProject(null); setLoading(false); return; }
-      setProject(projData);
+      let detailsData: any = {};
+      try {
+         detailsData = sqlDb.getFirstSync(`SELECT * FROM project_details WHERE project_id = ? LIMIT 1`, [projectId]) || {};
+      } catch (e) { console.warn(e); }
 
-      const obsData = sqlDb.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
+      const mergedProj = { ...detailsData };
+      Object.keys(tenderData).forEach(key => {
+        if (tenderData[key] !== null && tenderData[key] !== undefined && tenderData[key] !== '') {
+          mergedProj[key] = tenderData[key];
+        }
+      });
+      
+      if (Object.keys(mergedProj).length === 0) {
+          setProject(null);
+          setLoading(false);
+          return;
+      }
+      setProject(mergedProj);
+
+      let obsData: any[] = [];
+      try {
+          obsData = sqlDb.getAllSync(`SELECT * FROM observations WHERE project_code = ?`, [projectId]) as any[];
+      } catch (e) { console.warn(e); }
+
       if (obsData && obsData.length > 0) {
         const sortedObs = [...obsData].sort((a: any, b: any) => parseDateString(b.visit_date) - parseDateString(a.visit_date));
         setLatestObs([sortedObs[0]]);
         setPrevObs(sortedObs.length > 1 ? sortedObs.slice(1) : []);
       }
+
+      // [FIX: Last Visited Date Scan Logic]
+      const path = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+      try {
+          const files = await FileSystem.readDirectoryAsync(path);
+          let latestDateStr = '';
+          for(const f of files) {
+              if(f.startsWith('VISIT_')) {
+                  const parts = f.split('_');
+                  const datePart = parts[2]; // Extracts YYYYMMDD
+                  if(datePart && datePart.length === 8 && datePart > latestDateStr) {
+                      latestDateStr = datePart;
+                  }
+              }
+          }
+          if(latestDateStr) {
+              setLastVisited(`${latestDateStr.substring(6,8)}-${latestDateStr.substring(4,6)}-${latestDateStr.substring(0,4)}`);
+          } else {
+              setLastVisited('Not visited yet');
+          }
+      } catch(e) {
+          setLastVisited('Not visited yet');
+      }
+
       setLoading(false);
     } catch (error: any) {
       setDbError(`Database Interruption: ${error.message}`); setLoading(false);
     }
-  }, [projectId, tenderId, sqlDb]);
+  }, [projectId, tenderId, sqlDb, sanitizedFolder]);
 
   useEffect(() => {
     let isMounted = true;
@@ -108,68 +175,74 @@ export default function ProjectDetails() {
 
   const handleBackNavigation = () => router.back();
 
-  const getDirectoryMetadata = async (folderPath: string) => {
-    let totalFiles = 0, totalSize = 0, maxModTime = 0;
-    const traverse = async (currentPath: string) => {
-      const files = await FileSystem.readDirectoryAsync(currentPath);
-      for (const file of files) {
-        const fullPath = `${currentPath}${file}`;
-        const info = await FileSystem.getInfoAsync(fullPath);
-        if (info.isDirectory) await traverse(`${fullPath}/`);
-        else {
-          totalFiles++; totalSize += info.size || 0;
-          if (info.modificationTime && info.modificationTime > maxModTime) maxModTime = info.modificationTime;
-        }
-      }
-    };
-    await traverse(folderPath);
-    return { totalFiles, totalSize, maxModTime };
+  const handleDirectSaveToDevice = async () => {
+    if (isExportingRef.current) return;
+    const userId = await getUserId();
+    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+    
+    const dirInfo = await FileSystem.getInfoAsync(sourcePath);
+    if (!dirInfo.exists) return Alert.alert("No Data", "No project data exists to save yet.");
+    
+    try {
+      const permissions = await StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) return;
+
+      isExportingRef.current = true;
+      setExportState({ active: true, status: 'Copying to device...', isCancellable: false });
+      
+      const timestamp = new Date().toISOString().replace(/[:.-]/g, '_');
+      const exportDirName = `IRMA_Export_${projectId}_${timestamp}`;
+      const dirUri = await StorageAccessFramework.makeDirectoryAsync(permissions.directoryUri, exportDirName);
+      
+      const targetZipPath = `${FileSystem.cacheDirectory}${sanitizedFolder}_export.zip`;
+      await zip(sourcePath.replace('file://', ''), targetZipPath.replace('file://', ''));
+      
+      const zipBase64 = await FileSystem.readAsStringAsync(targetZipPath, { encoding: FileSystem.EncodingType.Base64 });
+      const fileUri = await StorageAccessFramework.createFileAsync(dirUri, `${sanitizedFolder}.zip`, 'application/zip');
+      await FileSystem.writeAsStringAsync(fileUri, zipBase64, { encoding: FileSystem.EncodingType.Base64 });
+      
+      Alert.alert("Success", "Project saved securely to your device folder.");
+    } catch (e) {
+       Alert.alert("Error", "Failed to save to device.");
+    } finally {
+       isExportingRef.current = false;
+       setExportState({ active: false, status: '', isCancellable: false });
+    }
   };
 
   const handleShareOptions = async () => {
     if (isExportingRef.current) return;
-    const sourcePath = `${FileSystem.documentDirectory}projects/${sanitizedFolder}/`;
+    const userId = await getUserId();
+    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+    
     const dirInfo = await FileSystem.getInfoAsync(sourcePath);
     if (!dirInfo.exists) return Alert.alert("No Data", "No files exist to share.");
-    const currentMeta = await getDirectoryMetadata(sourcePath);
-    if (currentMeta.totalFiles === 0) return Alert.alert("Empty Directory", "No files exist to share.");
 
-    Alert.alert("Share Project Data", `Ready to export ${currentMeta.totalFiles} files (~${formatBytes(currentMeta.totalSize)})`, [
+    Alert.alert("Share Project Data", "Select export method:", [
       { text: "Cancel", style: "cancel" },
-      { text: "Share as Link (Cloud)", onPress: () => handleCloudShare(sourcePath, currentMeta) },
-      { text: "Share as ZIP (Local)", onPress: () => handleLocalShare(sourcePath) }
+      { text: "Share Link (Cloud)", onPress: () => handleCloudShare(sourcePath) },
+      { text: "Share ZIP (Local)", onPress: () => handleLocalShare(sourcePath) }
     ]);
   };
 
-  const handleCloudShare = async (sourcePath: string, currentMeta: any) => {
+  const handleCloudShare = async (sourcePath: string) => {
     try {
       isExportingRef.current = true;
       setExportState({ active: true, status: 'Preparing Cloud Sync...', isCancellable: false });
 
       let uName = 'AnonymousUser';
-      try {
-        const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-        if (sessionStr) {
-          const parsedSession = JSON.parse(sessionStr);
-          const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-          if (userSnap.exists() && userSnap.data().username) {
-            uName = userSnap.data().username;
-          } else {
-            uName = parsedSession.userId;
-          }
-        }
-      } catch (e) {
-        console.warn("Failed to fetch user details", e);
+      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+      if (sessionStr) {
+        const parsedSession = JSON.parse(sessionStr);
+        const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().username) uName = userSnap.data().username;
       }
 
-      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, uName, currentMeta, (status) => {
+      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, uName, { totalFiles: 1, totalSize: 1, maxModTime: Date.now() }, (status) => {
          setExportState(prev => ({ ...prev, status }));
       });
       
-      const msg = `Project Data Export for ${projectId}:\n${expectedUrl}\n\nNote: The link might not be fully ready until the files are uploaded completely by the sender.`;
-      
-      setExportState({ active: true, status: 'Starting Upload...', isCancellable: true });
-      await Share.share({ message: msg });
+      await Share.share({ message: `Project Data Link for ${projectId}:\n${expectedUrl}` });
 
       startBackgroundUpload().finally(() => {
         isExportingRef.current = false;
@@ -184,24 +257,13 @@ export default function ProjectDetails() {
   const handleLocalShare = async (sourcePath: string) => {
     try {
       isExportingRef.current = true;
-      setExportState({ active: true, status: 'Compressing directory...\nThis may take a while depending on the total size.', isCancellable: true });
-      
+      setExportState({ active: true, status: 'Compressing directory...', isCancellable: true });
       const targetZipPath = `${FileSystem.cacheDirectory}${sanitizedFolder}.zip`;
-      let cleanSource = sourcePath.replace('file://', '');
-      try { cleanSource = decodeURIComponent(cleanSource); } catch(e){}
-      let cleanTarget = targetZipPath.replace('file://', '');
       
-      setTimeout(async () => {
-        try {
-          await zip(cleanSource, cleanTarget);
-          setExportState({ active: false, status: '', isCancellable: false });
-          await Sharing.shareAsync(targetZipPath, { dialogTitle: `Share Project: ${projectId}` });
-        } catch(e) {
-          Alert.alert("Zipping Failed", "Could not create local ZIP file.");
-        } finally {
-          isExportingRef.current = false;
-        }
-      }, 300);
+      await zip(sourcePath.replace('file://', ''), targetZipPath.replace('file://', ''));
+      setExportState({ active: false, status: '', isCancellable: false });
+      await Sharing.shareAsync(targetZipPath);
+      isExportingRef.current = false;
     } catch (e) {
       isExportingRef.current = false; setExportState({ active: false, status: '', isCancellable: false });
     }
@@ -215,11 +277,11 @@ export default function ProjectDetails() {
 
   const handleAddToPlanner = () => {
     store.addPlannerItem({
-      id: `${project.project_id}_${project.tender_id}`,
-      projectId: project.project_id,
-      tenderId: project.tender_id,
-      title: project.project_title,
-      ulb: project.ulb
+      id: `${project?.project_id || projectId}_${project?.tender_id || tenderId}`,
+      projectId: project?.project_id || projectId,
+      tenderId: project?.tender_id || tenderId,
+      title: project?.project_title || 'Untitled',
+      ulb: project?.ulb || 'Unknown'
     });
     Alert.alert("Added to Planner", `Project added to Visits Pending list.`);
   };
@@ -235,16 +297,18 @@ export default function ProjectDetails() {
     </View>
   );
 
+  // [FIX: Properly scope these variables before they are called in JSX]
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
   const isAlreadyPlanned = store.plannerItems.some(i => i.id === `${project.project_id}_${project.tender_id}`);
   const hasVisited = latestObs.length > 0 || prevObs.length > 0 || hasEdited || hasKml;
 
   return (
     <View style={globalStyles.container}>
+      {/* Header with fixed isAlreadyPlanned reference */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBackNavigation} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#1E293B" /></TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
-          <Text style={styles.headerTitle} numberOfLines={1}>{project.project_id}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1}>{project.project_id || projectId}</Text>
           <Text style={styles.headerSub}>{project.ulb}, {project.state}</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -253,6 +317,9 @@ export default function ProjectDetails() {
               <Ionicons name="add-circle" size={26} color="#10B981" />
             </TouchableOpacity>
           )}
+          <TouchableOpacity onPress={handleDirectSaveToDevice} style={[styles.backBtn, { marginRight: 10 }]}>
+            <Ionicons name="download-outline" size={24} color="#10B981" />
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleShareOptions} style={styles.backBtn}>
             <Ionicons name="share-social" size={24} color="#2563EB" />
           </TouchableOpacity>
@@ -278,20 +345,29 @@ export default function ProjectDetails() {
               <Text style={styles.projectTypeTag}>{project.project_type || 'N/A'}</Text>
               
               <View style={styles.dataGrid}>
-                <DataCell label="Tender ID" value={project.tender_id} />
-                <DataCell label="No. of Tenders" value={project.no_of_tenders} />
+                <DataCell label="Tender ID" value={project.tender_id || tenderId} />
+                <DataCell label="No. of Tenders" value={project.no_of_tenders} /> 
                 <DataCell label="NIT Date" value={project.nit_date} />
                 <DataCell label="Award Date" value={project.award_date} />
-                <DataCell label="Sch. Completion" value={project.sch_completion_date} />
+                <DataCell label="Sch. Completion" value={project.completion_date} />
+                
+                <View style={[styles.dataColumn, { width: '48%', marginBottom: 15 }]}>
+                  <Text style={styles.dataLabel}>Last Visited</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Ionicons name="calendar" size={14} color="#16A34A" style={{ marginRight: 4 }} />
+                    <Text style={[styles.dataValue, { color: '#16A34A', fontWeight: 'bold' }]}>{lastVisited || 'Loading...'}</Text>
+                  </View>
+                </View>
+
                 <DataCell label="Bidder Name" value={project.bidder_name} fullWidth />
                 
-                <DataCell label="Est. CAPEX" value={`₹${project.est_capex || '0'} Cr`} />
-                <DataCell label="Est. O&M" value={`₹${project.est_o_m || '0'} Cr`} />
-                <DataCell label="Awarded CAPEX" value={`₹${project.awarded_capex || project.capex || '0'} Cr`} color="#2563EB" />
-                <DataCell label="Awarded O&M" value={`₹${project.awarded_om || project.om || '0'} Cr`} color="#2563EB" />
+                <DataCell label="Est. CAPEX" value={project.est_capex ? `₹${project.est_capex} Cr` : 'N/A'} />
+                <DataCell label="Est. O&M" value={project.est_om ? `₹${project.est_om} Cr` : 'N/A'} />
+                <DataCell label="Awarded CAPEX" value={project.awarded_capex || project.capex ? `₹${project.awarded_capex || project.capex} Cr` : 'N/A'} color="#2563EB" />
+                <DataCell label="Awarded O&M" value={project.awarded_om || project.om ? `₹${project.awarded_om || project.om} Cr` : 'N/A'} color="#2563EB" />
                 
-                <DataCell label="Physical Progress" value={`${project.physical_progress || '0'}%`} color="#16A34A" />
-                <DataCell label="Financial Progress" value={`${project.financial_progress || '0'}%`} color="#D97706" />
+                <DataCell label="Physical Progress" value={project.physical_progress ? `${project.physical_progress}%` : 'N/A'} color="#16A34A" />
+                <DataCell label="Financial Progress" value={project.financial_progress ? `${project.financial_progress}%` : 'N/A'} color="#D97706" />
               </View>
 
               <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
@@ -316,7 +392,7 @@ export default function ProjectDetails() {
               <View style={styles.scopeBox}>
                 <Text style={[styles.dataLabel, { textAlign: 'center', marginBottom: 6 }]}>Brief Scope of Work</Text>
                 <Text style={styles.scopeText} numberOfLines={isScopeExpanded ? undefined : 3}>{project.scope || 'No scope details available.'}</Text>
-                {(project.scope && project.scope.length > 120) && (
+                {((project.scope || '').length > 120) && (
                   <TouchableOpacity onPress={() => setIsScopeExpanded(!isScopeExpanded)} style={{ marginTop: 8, alignSelf: 'center' }}>
                     <Text style={{ color: '#2563EB', fontSize: 12, fontWeight: '700' }}>{isScopeExpanded ? 'View Less' : 'View More'}</Text>
                   </TouchableOpacity>
@@ -333,10 +409,9 @@ export default function ProjectDetails() {
         {activeTab === 'visits' && (
           <View>
             <VisitManager projectId={projectId} tenderId={tenderId} folderName={sanitizedFolder} onEdit={() => setHasEdited(true)} />
-
             <Text style={[styles.sectionHeader, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
             {latestObs.length === 0 && prevObs.length === 0 ? (
-              <View style={globalStyles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist for this project code.</Text></View>
+              <View style={globalStyles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist.</Text></View>
             ) : (
               <View>
                 {latestObs.length > 0 && (
@@ -349,19 +424,14 @@ export default function ProjectDetails() {
                   <View>
                     <Text style={[styles.subSectionTitle, { textAlign: 'center' }]}>Previous Observations</Text>
                     {displayedPrevObs.map((obs, idx) => <ObservationCard key={`prev_${idx}`} obs={obs} />)}
-                    
                     {prevObs.length > 5 && (
                       <TouchableOpacity onPress={() => setShowAllObs(!showAllObs)} style={styles.viewMoreBtn}>
-                        <Text style={styles.viewMoreText}>{showAllObs ? 'Collapse Observations' : `View All Previous Observations (${prevObs.length})`}</Text>
+                        <Text style={styles.viewMoreText}>{showAllObs ? 'Collapse' : `View All (${prevObs.length})`}</Text>
                         <Ionicons name={showAllObs ? "chevron-up" : "chevron-down"} size={14} color="#2563EB" style={{marginLeft: 4}}/>
                       </TouchableOpacity>
                     )}
                   </View>
                 )}
-
-                {/* <View style={styles.endOfObservationsMarker}>
-                   <Text style={{ color: '#94A3B8', fontSize: 11, fontStyle: 'italic', letterSpacing: 2 }}>--------------- end of observations ---------------</Text>
-                </View> */}
               </View>
             )}
           </View>

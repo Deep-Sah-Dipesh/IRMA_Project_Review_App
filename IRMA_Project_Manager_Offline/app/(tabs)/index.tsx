@@ -4,6 +4,7 @@ import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as SecureStore from 'expo-secure-store'; // Added to fetch unique User ID
 
 import { globalStyles } from '../../styles/globalStyles';
 import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
@@ -100,6 +101,14 @@ export default function ProjectsTab() {
   const flatListRef = useRef<FlatList>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
+  const getUserId = async () => {
+    try {
+      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+      if (sessionStr) return JSON.parse(sessionStr).userId || 'AnonymousUser';
+    } catch(e) {}
+    return 'AnonymousUser';
+  };
+
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -112,10 +121,12 @@ export default function ProjectsTab() {
   );
 
   const checkLocalWorkspace = async (isMounted: boolean) => {
-    const kmls = await getProjectsWithLocalKmls();
+    const userId = await getUserId();
+    const kmls = await getProjectsWithLocalKmls(); // Assumes locationHelpers is also updated to use UserID
     const visited = new Set<string>();
     try {
-      const baseDir = FileSystem.documentDirectory + 'projects/';
+      // User-Isolated Directory Scanning
+      const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
       const folders = await FileSystem.readDirectoryAsync(baseDir).catch(()=>[]);
       for (const f of folders) visited.add(f);
     } catch(e) {}
@@ -239,11 +250,7 @@ export default function ProjectsTab() {
         hasKml={kmlProjects.has(fName)}
         isVisited={isVisited}
         onPress={() => {
-          if (isVisited) {
-            Alert.alert("Project Visit Report Exists", "You have already created visit reports on this project. \n\nTo access the details for this project, view it from the Dashboard section.");
-            return;
-          }
-          
+          // Removed the blocking alert here. Users can now access the details page normally.
           router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
         }} 
       />
@@ -263,7 +270,6 @@ export default function ProjectsTab() {
     <View style={globalStyles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          {/* Constrain title to flex 1 to prevent squishing by sort button */}
           <Text style={styles.title} numberOfLines={1}>All Projects</Text>
           <View style={styles.headerControls}>
             <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>
@@ -276,7 +282,6 @@ export default function ProjectsTab() {
               onPress={() => setActiveModal({ type: 'sort', options: sortOptions, title: 'Sort Projects By' })}
             >
               <Ionicons name="swap-vertical" size={16} color="#475569" />
-              {/* Uses intelligent shortened names and prevents wrap/overflow */}
               <Text style={styles.sortBtnText} numberOfLines={1}>
                 {sortBy ? getShortSortName(sortBy) : 'Sort By'}
               </Text>
@@ -410,7 +415,6 @@ const styles = StyleSheet.create({
   filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
   
-  // New Visited Card Styling
   visitedCard: { backgroundColor: 'rgba(220, 252, 231, 0.7)', borderColor: '#86EFAC', borderWidth: 1 },
   
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },

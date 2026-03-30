@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, FlatList, TextInput, StyleSheet, Keyboard
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store'; // Ensures path isolation
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useUserStore } from '../../store/userStore';
 import { getProjectsWithLocalKmls } from '../../utils/locationHelpers';
@@ -38,21 +39,30 @@ export default function PlannerTab() {
   const [collapsedPendingUlbs, setCollapsedPendingUlbs] = useState<Set<string>>(new Set());
   const [expandedPlanningUlbs, setExpandedPlanningUlbs] = useState<Set<string>>(new Set());
 
-  // Smart Scanning initialized via FocusEffect to instantly refresh counts after adding media
+  const getUserId = async () => {
+    try {
+      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+      if (sessionStr) return JSON.parse(sessionStr).userId || 'AnonymousUser';
+    } catch(e) {}
+    return 'AnonymousUser';
+  };
+
+  // Smart Scanning strictly isolated per user
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
       
       const scanVisited = async () => {
         try {
+          const userId = await getUserId();
           const validVisited = new Set<string>();
           
-          // 1. Check for valid KML Location Pins
+          // Check for valid KML Location Pins
           const kmlProjects = await getProjectsWithLocalKmls().catch(() => new Set<string>());
           kmlProjects.forEach(id => validVisited.add(id));
 
-          // 2. Deep scan projects directory for actual media files (ignoring empty folders)
-          const baseDir = FileSystem.documentDirectory + 'projects/';
+          // Deep scan projects directory for User
+          const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
           const folders = await FileSystem.readDirectoryAsync(baseDir).catch(() => []);
           
           for (const folder of folders) {
@@ -71,7 +81,6 @@ export default function PlannerTab() {
                    if (info.isDirectory) {
                       await checkHasFiles(`${fullPath}/`);
                    } else {
-                      // Validate if file is a real captured media (not just JSON metadata or .keep)
                       if (!item.endsWith('.json') && item !== '.keep') {
                          hasFiles = true;
                       }
@@ -80,9 +89,7 @@ export default function PlannerTab() {
              };
 
              await checkHasFiles(folderPath);
-             if (hasFiles) {
-                validVisited.add(folder);
-             }
+             if (hasFiles) validVisited.add(folder);
           }
           
           if (isMounted) setVisitedSet(validVisited);
@@ -163,7 +170,6 @@ export default function PlannerTab() {
     return store.plannerItems.filter(i => !visitedSet.has(getFolderName(i.projectId, i.tenderId))).length;
   }, [store.plannerItems, visitedSet]);
 
-  // Generate FlatList Data matching Dashboard's grouping style
   const listData = useMemo(() => {
     const q = search.toLowerCase();
     const groups: Record<string, any[]> = {};
@@ -175,12 +181,11 @@ export default function PlannerTab() {
       const isPending = pendingProjIds.has(strictId) || pendingProjIds.has(legacyId);
       const isVisited = visitedSet.has(strictId);
 
-      // Filtering Logic based on active tab
       let shouldInclude = false;
       if (activeTab === 'pending') {
         shouldInclude = isPending && !isVisited;
       } else {
-        shouldInclude = true; // Show all in Plan to Visit
+        shouldInclude = true;
       }
 
       if (shouldInclude) {
@@ -203,9 +208,7 @@ export default function PlannerTab() {
     Object.keys(groups).sort().forEach(ulb => {
       const projects = groups[ulb];
       
-      // Sort Projects
       projects.sort((a, b) => {
-        // Planner specific weighting (Visited bottom, Planned top) only in Planning tab
         if (activeTab === 'planning') {
           const aVisited = visitedSet.has(getFolderName(a.project_id, a.tender_id));
           const bVisited = visitedSet.has(getFolderName(b.project_id, b.tender_id));
@@ -217,7 +220,6 @@ export default function PlannerTab() {
           if (weightA !== weightB) return weightA - weightB;
         }
 
-        // Standard User Selected Sort
         let res = 0;
         if (sortBy === 'Physical Progress') {
           res = (parseFloat(a.physical_progress) || 0) - (parseFloat(b.physical_progress) || 0);
@@ -227,7 +229,6 @@ export default function PlannerTab() {
         return sortOrder === 'asc' ? res : -res;
       });
 
-      // Push Header
       flattenedData.push({
         isHeader: true,
         id: `header_${ulb}`,
@@ -235,7 +236,6 @@ export default function PlannerTab() {
         count: projects.length
       });
 
-      // Push Projects conditionally based on expansion
       const isExpanded = activeTab === 'pending' 
         ? !collapsedPendingUlbs.has(ulb) 
         : expandedPlanningUlbs.has(ulb);
@@ -303,17 +303,14 @@ export default function PlannerTab() {
         activeOpacity={0.7}
         onPress={() => router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any)}
       >
-        {/* Top Row: Project ID & Progress */}
         <View style={styles.cardHeaderRow}>
           <Text style={styles.cardId}>{item.project_id}</Text>
           <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
         </View>
 
-        {/* Middle: Tender ID & Title */}
         <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
         <Text style={styles.cardTitle}>{item.project_title}</Text>
 
-        {/* Bottom Row: Type & Action Button */}
         <View style={styles.cardBottomRow}>
           <Text style={styles.cardType}>{item.project_type}</Text>
           
@@ -353,7 +350,6 @@ export default function PlannerTab() {
          </TouchableOpacity>
       </View>
 
-      {/* Dashboard-Style Search and Sort Row */}
       <View style={styles.searchSortRow}>
         {isSearchActive ? (
           <View style={styles.activeSearchContainer}>
@@ -463,7 +459,6 @@ const styles = StyleSheet.create({
   ulbHeaderText: { fontSize: 14, fontWeight: 'bold', color: '#334155', flexShrink: 1 },
   ulbCountBadge: { fontSize: 12, color: '#2563EB', fontWeight: 'bold', backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12, marginLeft: 10 },
   
-  // Uniform Card Styles
   card: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 12, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F1F5F9' },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },

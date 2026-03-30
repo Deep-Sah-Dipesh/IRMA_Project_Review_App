@@ -2,7 +2,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
 export const DB_NAME = "mainDataBase_26032026.db";
-const FIREBASE_DB_URL = "https://firebasestorage.googleapis.com/v0/b/irma-project-manager-offline.firebasestorage.app/o/Database%2FmainDataBase_26032026.db?alt=media";
+const FIREBASE_DB_URL = "https://firebasestorage.googleapis.com/v0/b/irma-project-manager-offline.firebasestorage.app/o/Database%2FmainDataBase_30032026.db?alt=media";
 
 export const downloadAndInitDatabase = async (
   onProgress: (progress: number) => void,
