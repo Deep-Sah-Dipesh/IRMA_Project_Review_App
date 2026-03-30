@@ -17,7 +17,7 @@ import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store'; 
 import { doc, getDoc } from 'firebase/firestore'; 
 import { Accelerometer } from 'expo-sensors'; 
-import { InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av'; // [FIX: Added for high-priority background audio]
+import { InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av'; 
 
 import { db } from '../utils/firebaseConfig';
 import { globalStyles } from '../styles/globalStyles';
@@ -47,8 +47,11 @@ const formatGeoDate = (d: Date) => {
   return `${days[d.getDay()]}, ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(h12)}:${pad(d.getMinutes())} ${ampm} GMT ${sign}${offH}:${offM}`;
 };
 
+const ZOOM_STEPS = [0, 0.15, 0.3, 0.5, 0.75, 1.0];
+const ZOOM_LABELS = ['1x', '1.5x', '2x', '3x', '4x', '5x'];
+
 export default function VisitManager({ projectId, tenderId, folderName, onEdit }: VisitManagerProps) {
-  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
 
   const [activeUserId, setActiveUserId] = useState<string>('AnonymousUser');
 
@@ -70,10 +73,10 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const [commentText, setCommentText] = useState('');
   const commentInputRef = useRef<TextInput>(null);
 
-  // New State for Rate/Review Feature
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [reviewSeverity, setReviewSeverity] = useState<any>(null);
   const [reviewParams, setReviewParams] = useState({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
+  const [existingReviewPath, setExistingReviewPath] = useState<string | null>(null);
  
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordTime, setRecordTime] = useState(0);
@@ -86,7 +89,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '4:3'>('16:9');
  
   const [showZoom, setShowZoom] = useState(false);
-  const [zoom, setZoom] = useState(0);
+  const [zoomIndex, setZoomIndex] = useState(0); 
   const [isCapturing, setIsCapturing] = useState(false);
   
   const [deviceOrientation, setDeviceOrientation] = useState(0); 
@@ -106,14 +109,12 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
 
   const getBaseDirectory = () => `${FileSystem.documentDirectory}projects/${activeUserId}/${folderName}/`;
  
-  const HIDDEN_WIDTH = 1080; 
-  const HIDDEN_HEIGHT = aspectRatio === '4:3' ? 1440 : 1920;
   const CAMERA_HEIGHT = aspectRatio === '4:3' ? SCREEN_WIDTH * (4 / 3) : SCREEN_WIDTH * (16 / 9);
 
   const severityOptions = [
-    { level: 1, label: 'Critical', color: '#EF4444' },
-    { level: 2, label: 'Moderate', color: '#F59E0B' },
-    { level: 3, label: 'Satisfactory', color: '#10B981' },
+    { level: 1, label: 'High', color: '#EF4444' },
+    { level: 2, label: 'Medium', color: '#F59E0B' },
+    { level: 3, label: 'Low', color: '#10B981' },
   ];
 
   useEffect(() => {
@@ -205,7 +206,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           setCaptureQueue(q => q.slice(1));
           setCaptureTrigger(0);
         }
-      }, 150);
+      }, 250); 
     }
   }, [captureTrigger, captureQueue]);
 
@@ -277,7 +278,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const updateFileStats = async () => {
     try {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
-      const checkFolders = ['Notes', 'Attachments', 'Geotag Captures', 'Location Pins', 'Documents', 'Normal Captures'];
+      const checkFolders = ['Notes', 'Comments', 'Attachments', 'Geotag Captures', 'Location Pins', 'Documents', 'Normal Captures'];
       let stats: Record<string, number> = { comments: 0, audio: 0, documents: 0, photos: 0, videos: 0, geotagged_photos: 0, location: 0, scanned_docs: 0, total: 0 };
      
       for (const folder of checkFolders) {
@@ -289,7 +290,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
              if (!f.endsWith('.json')) {
                 const ext = f.split('.').pop()?.toLowerCase();
                 let cat = 'documents';
-                if (folder === 'Notes') cat = ext === 'txt' ? 'comments' : 'audio';
+                if (folder === 'Notes' || folder === 'Comments') cat = ext === 'txt' ? 'comments' : 'audio';
                 else if (folder === 'Geotag Captures') cat = 'geotagged_photos';
                 else if (folder === 'Location Pins') cat = 'location';
                 else if (folder === 'Documents') cat = 'scanned_docs';
@@ -307,21 +308,44 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     } catch (e) {}
   };
 
-  // [Added: daily review check]
   const handleOpenReview = async () => {
     try {
-      const targetDir = await ensureSubfolder('Comments');
+      const targetDir = await ensureSubfolder('Notes');
       const files = await FileSystem.readDirectoryAsync(targetDir);
       const todayStr = getTodayYYYYMMDD();
-      const alreadyReviewed = files.some(f => f.startsWith('Field_Review_') && f.includes(`_${todayStr}_`));
+      
+      const existingReview = files.find(f => f.startsWith('Field_Review_') && f.includes(`_${todayStr}_`));
 
-      if (alreadyReviewed) {
-        Alert.alert('Usage Restricted', 'A site review for this project has already been submitted today.');
-        return;
+      if (existingReview) {
+        const content = await FileSystem.readAsStringAsync(`${targetDir}${existingReview}`);
+        const severityMatch = content.match(/SEVERITY STATUS:\s*(.+)/);
+        const qualityMatch = content.match(/1\. QUALITY:\s*(.+)/);
+        const timeMatch = content.match(/2\. TIME LIMIT:\s*(.+)/);
+        const outputMatch = content.match(/3\. OUTPUT:\s*(.+)/);
+
+        if (severityMatch) {
+            const sevLabel = severityMatch[1].trim();
+            const matchedSev = severityOptions.find(opt => opt.label.toUpperCase() === sevLabel.toUpperCase());
+            setReviewSeverity(matchedSev || null);
+        }
+        setReviewParams({
+            quality: qualityMatch ? qualityMatch[1].trim() : 'Not Evaluated',
+            timeLimit: timeMatch ? timeMatch[1].trim() : 'On Schedule',
+            output: outputMatch ? outputMatch[1].trim() : 'Standard'
+        });
+        
+        setExistingReviewPath(`${targetDir}${existingReview}`);
+        Alert.alert('Edit Mode', 'Opening your existing review for today. Modifying and saving will update the current file.');
+      } else {
+        setReviewSeverity(null);
+        setReviewParams({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
+        setExistingReviewPath(null);
       }
-
       setShowReviewModal(true);
     } catch (e) {
+      setReviewSeverity(null);
+      setReviewParams({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
+      setExistingReviewPath(null);
       setShowReviewModal(true);
     }
   };
@@ -331,7 +355,6 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const perm = await Audio.requestPermissionsAsync();
       if (perm.status !== 'granted') return Alert.alert("Permission Denied");
 
-      // [Changed: stronger background audio mode]
       await Audio.setAudioModeAsync({ 
           allowsRecordingIOS: true, 
           playsInSilentModeIOS: true,
@@ -429,12 +452,18 @@ FIELD PARAMETERS:
 Generated by Project Manager`;
 
     try {
-      // [Changed: save reviews in Comments]
-      const targetDir = await ensureSubfolder('Comments');
+      const targetDir = await ensureSubfolder('Notes');
+      
+      if (existingReviewPath) {
+          await FileSystem.deleteAsync(existingReviewPath, { idempotent: true });
+      }
+
       const path = `${targetDir}Field_Review_${todayStr}_${timeStr}.txt`;
       await FileSystem.writeAsStringAsync(path, content, { encoding: FileSystem.EncodingType.UTF8 });
-      Alert.alert("Report Saved", "Field visit review has been documented in the Comments folder.");
+      Alert.alert("Report Saved", "Field visit review has been documented in the Notes folder.");
+      
       setShowReviewModal(false);
+      setExistingReviewPath(null);
       updateFileStats();
     } catch (err) {
       Alert.alert("Error", "Could not save the field report.");
@@ -462,7 +491,7 @@ Generated by Project Manager`;
       }
       setAspectRatio('16:9');
       setFlashMode('auto');
-      setZoom(0);
+      setZoomIndex(0);
 
       setIsDocScannerMode(isScanner);
       setDocScans([]);
@@ -483,14 +512,23 @@ Generated by Project Manager`;
       setIsCapturing(true);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-      const photo = await cameraRef.takePictureAsync({ quality: 0.85 });
+      const photo = await cameraRef.takePictureAsync({ quality: isDocScannerMode ? 0.4 : 0.85 });
      
       if (photo) {
         if (isDocScannerMode) {
           setDocScans(prev => [...prev, { uri: photo.uri, orientation: deviceOrientation }]);
         } else {
           const safeGeoData = liveGeoData || sessionGeoDataRef.current || { lat: "0.000000", lon: "0.000000", timestamp: formatGeoDate(new Date()), address: "", city: "", region: "", country: "" };
-          setCaptureQueue(q => [...q, { id: Date.now(), uri: photo.uri, geoData: safeGeoData, orientation: deviceOrientation }]);
+          
+          setCaptureQueue(q => [...q, { 
+              id: Date.now(), 
+              uri: photo.uri, 
+              geoData: safeGeoData, 
+              orientation: deviceOrientation,
+              aspectRatio,
+              photoWidth: photo.width,
+              photoHeight: photo.height
+          }]);
          
           const targetDir = await ensureSubfolder('Location Pins');
           const files = await FileSystem.readDirectoryAsync(targetDir).catch(() => []);
@@ -807,11 +845,10 @@ Generated by Project Manager`;
         </View>
       )}
 
-      {/* Embedded Rate/Review Button Trigger */}
       {activeVisit && (
         <TouchableOpacity 
           style={[styles.visitBtnDark, { backgroundColor: '#0F172A', marginBottom: 15 }]} 
-          onPress={handleOpenReview} // [Changed: review limit check]
+          onPress={handleOpenReview}
         >
           <Ionicons name="star" size={18} color="#F59E0B" style={{ marginRight: 8 }} />
           <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 14 }}>Rate / Review Site</Text>
@@ -837,71 +874,84 @@ Generated by Project Manager`;
             
             {captureQueue.length > 0 && (
               <View style={{ position: 'absolute', top: 0, left: 0, zIndex: -1, elevation: -1, opacity: 0.01 }} pointerEvents="none" collapsable={false}>
-                <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: (captureQueue[0].orientation === 90 || captureQueue[0].orientation === -90) ? HIDDEN_HEIGHT : HIDDEN_WIDTH, height: (captureQueue[0].orientation === 90 || captureQueue[0].orientation === -90) ? HIDDEN_WIDTH : HIDDEN_HEIGHT, backgroundColor: '#000' }} collapsable={false}>
-                  <Image source={{ uri: captureQueue[0].uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} collapsable={false} />
-                  <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, width: '100%' }} collapsable={false}>
-                    <GPSCameraOverlay geoData={captureQueue[0].geoData} scale={HIDDEN_WIDTH / SCREEN_WIDTH} />
-                  </View>
-                </ViewShot>
+                {(() => {
+                   const item = captureQueue[0];
+                   const isLandscape = item.orientation === 90 || item.orientation === -90;
+                   const is43 = item.aspectRatio === '4:3';
+                   
+                   const shotW = isLandscape ? (is43 ? 1440 : 1920) : 1080;
+                   const shotH = isLandscape ? 1080 : (is43 ? 1440 : 1920);
+
+                   return (
+                      <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: shotW, height: shotH, backgroundColor: '#000' }} collapsable={false}>
+                        <Image source={{ uri: item.uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} collapsable={false} />
+                        
+                        <View style={{ position: 'absolute', bottom: 15, left: 0, right: 0, alignItems: 'center' }} collapsable={false}>
+                           <GPSCameraOverlay geoData={item.geoData} scale={shotW / SCREEN_WIDTH} isLive={false} />
+                        </View>
+                      </ViewShot>
+                   );
+                })()}
               </View>
             )}
 
-            <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, overflow: 'hidden', justifyContent: 'center', alignItems: 'center', zIndex: 10 }}>
-             
-              {!isDocScannerMode && (!liveGeoData || liveGeoData.lat === "0.000000") && (
-                <View style={styles.gpsWaitingOverlay}>
-                  <ActivityIndicator size="large" color="#FFF" />
-                  <Text style={{color:'#FFF', marginTop: 10, fontWeight: 'bold'}}>Waiting for GPS signals...</Text>
-                </View>
-              )}
+            <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }}>
+               <View style={{ width: SCREEN_WIDTH, height: CAMERA_HEIGHT, overflow: 'hidden' }}>
+                 {!isDocScannerMode && (!liveGeoData || liveGeoData.lat === "0.000000") && (
+                   <View style={styles.gpsWaitingOverlay}>
+                     <ActivityIndicator size="large" color="#FFF" />
+                     <Text style={{color:'#FFF', marginTop: 10, fontWeight: 'bold'}}>Waiting for GPS signals...</Text>
+                   </View>
+                 )}
 
-              <TouchableWithoutFeedback onPress={handleTapToFocus}>
-                 <View style={{ width: '100%', height: '100%' }}>
-                    <CameraView ref={setCameraRef} style={{ width: '100%', height: '100%' }} zoom={zoom} mode="picture" facing={cameraFacing} flash={flashMode === 'auto' ? 'auto' : flashMode === 'on' ? 'on' : 'off'} />
-                    {focusPoint && (
-                       <View style={{ position: 'absolute', top: focusPoint.y - 30, left: focusPoint.x - 30, width: 60, height: 60, borderWidth: 2, borderColor: '#F59E0B', borderRadius: 4 }} />
-                    )}
-                 </View>
-              </TouchableWithoutFeedback>
-             
-              <View style={styles.cameraTopTools}>
-                 <TouchableOpacity onPress={() => setAspectRatio(a => a === '16:9' ? '4:3' : '16:9')} style={styles.cameraTopBtn}>
-                   <Ionicons name="expand" size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
-                   <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{aspectRatio}</Text>
-                 </TouchableOpacity>
+                 <TouchableWithoutFeedback onPress={handleTapToFocus}>
+                    <View style={{ width: '100%', height: '100%' }}>
+                       <CameraView ref={setCameraRef} style={{ width: '100%', height: '100%' }} zoom={ZOOM_STEPS[zoomIndex]} mode="picture" facing={cameraFacing} flash={flashMode === 'auto' ? 'auto' : flashMode === 'on' ? 'on' : 'off'} />
+                       {focusPoint && (
+                          <View style={{ position: 'absolute', top: focusPoint.y - 30, left: focusPoint.x - 30, width: 60, height: 60, borderWidth: 2, borderColor: '#F59E0B', borderRadius: 4 }} />
+                       )}
+                    </View>
+                 </TouchableWithoutFeedback>
 
-                 <View style={{ alignItems: 'center' }}>
-                    <TouchableOpacity onPress={() => setShowZoom(!showZoom)} style={[styles.cameraTopBtn, showZoom && { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
-                       <Ionicons name="search" size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
-                       <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{Math.round(zoom * 100)}%</Text>
-                    </TouchableOpacity>
-                    {showZoom && (
-                       <View style={styles.zoomControls}>
-                          <TouchableOpacity onPress={() => setZoom(z => Math.max(0, z - 0.05))} style={styles.zoomBtn}><Text style={styles.zoomBtnText}>-</Text></TouchableOpacity>
-                          <TouchableOpacity onPress={() => setZoom(z => Math.min(1, z + 0.05))} style={styles.zoomBtn}><Text style={styles.zoomBtnText}>+</Text></TouchableOpacity>
-                       </View>
-                    )}
-                 </View>
-
-                 <TouchableOpacity onPress={cycleFlashMode} style={styles.cameraTopBtn}>
-                   <Ionicons name={flashMode === 'on' ? "flash" : flashMode === 'auto' ? "flash-outline" : "flash-off"} size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
-                   <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{flashMode}</Text>
-                 </TouchableOpacity>
-              </View>
-
-              {!isDocScannerMode && liveGeoData && (
-                <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, pointerEvents: 'none' }}>
-                   <GPSCameraOverlay geoData={liveGeoData} isLive />
-                </View>
-              )}
+                 {!isDocScannerMode && liveGeoData && (
+                   <View style={{ position: 'absolute', bottom: 15, left: 0, right: 0, alignItems: 'center', pointerEvents: 'none' }}>
+                      <GPSCameraOverlay geoData={liveGeoData} scale={1} isLive={true} />
+                   </View>
+                 )}
+               </View>
             </View>
-           
-            <View style={styles.cameraControlsContainer}>
+
+            <View style={{ position: 'absolute', top: 50, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 20, zIndex: 30 }} pointerEvents="box-none">
+               <TouchableOpacity onPress={() => setAspectRatio(a => a === '16:9' ? '4:3' : '16:9')} style={styles.cameraTopBtn}>
+                 <Ionicons name="expand" size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
+                 <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{aspectRatio}</Text>
+               </TouchableOpacity>
+
+               <View style={{ alignItems: 'center' }} pointerEvents="box-none">
+                  <TouchableOpacity onPress={() => setShowZoom(!showZoom)} style={[styles.cameraTopBtn, showZoom && { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
+                     <Ionicons name="search" size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
+                     <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{ZOOM_LABELS[zoomIndex]}</Text>
+                  </TouchableOpacity>
+                  {showZoom && (
+                     <View style={styles.zoomControls}>
+                        <TouchableOpacity onPress={() => setZoomIndex(z => Math.max(0, z - 1))} style={styles.zoomBtn}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>-</Text></TouchableOpacity>
+                        <TouchableOpacity onPress={() => setZoomIndex(z => Math.min(ZOOM_STEPS.length - 1, z + 1))} style={styles.zoomBtn}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>+</Text></TouchableOpacity>
+                     </View>
+                  )}
+               </View>
+
+               <TouchableOpacity onPress={cycleFlashMode} style={styles.cameraTopBtn}>
+                 <Ionicons name={flashMode === 'on' ? "flash" : flashMode === 'auto' ? "flash-outline" : "flash-off"} size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
+                 <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{flashMode}</Text>
+               </TouchableOpacity>
+            </View>
+
+            <View style={styles.cameraControlsContainer} pointerEvents="box-none">
                <TouchableOpacity onPress={() => setShowLiveCamera(false)} style={styles.cameraSideBtn}>
                  <Ionicons name="close" size={36} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
                </TouchableOpacity>
                
-               <View style={{alignItems: 'center'}}>
+               <View style={{alignItems: 'center'}} pointerEvents="box-none">
                    <TouchableOpacity onPress={captureLiveMedia} disabled={isCapturing} style={[styles.cameraCaptureBtnOuter, isCapturing && { borderColor: '#94A3B8' }]}>
                      <View style={[styles.cameraCaptureBtnInner, isCapturing && { backgroundColor: '#E2E8F0' }]} />
                    </TouchableOpacity>
@@ -993,7 +1043,6 @@ Generated by Project Manager`;
                   ))}
                 </View>
 
-                {/* [Added: output option] */}
                 <Text style={styles.reviewLabel}>Project Output:</Text>
                 <View style={styles.reviewRow}>
                   {['Poor', 'Standard', 'Targeted'].map(o => (
@@ -1004,7 +1053,7 @@ Generated by Project Manager`;
                 </View>
 
                 <TouchableOpacity style={[globalStyles.primaryBtn, { marginTop: 25, backgroundColor: '#0F172A' }]} onPress={handleGenerateFieldReport}>
-                  <Text style={globalStyles.primaryBtnText}>Export Report (.txt)</Text>
+                  <Text style={globalStyles.primaryBtnText}>{existingReviewPath ? 'Update Existing Report' : 'Export Report (.txt)'}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1179,11 +1228,12 @@ const GPSCameraOverlay = ({ geoData, scale = 1, isLive = false }: { geoData: any
     : `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=16&size=400x400&maptype=mapnik&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
  
   return (
-    <View style={[styles.gpsOverlayWrapper, { transform: [{ scale }], transformOrigin: 'bottom left' }]} collapsable={false}>
+    <View style={{ transform: [{ scale }], transformOrigin: 'bottom', flexDirection: 'row', alignItems: 'center' }} collapsable={false}>
       <View style={styles.gpsMapSquare} collapsable={false}>
-         {geoData.lat === "0.000000" ? <View style={{flex: 1, backgroundColor: '#334155', justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={32} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ width: '100%', height: '100%' }} collapsable={false} />}
+         {geoData.lat === "0.000000" ? <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={24} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ width: '100%', height: '100%' }} collapsable={false} />}
       </View>
-      <View style={styles.gpsFloatingBadge} collapsable={false}>
+
+      <View style={styles.gpsTextContainer} collapsable={false}>
          <Text style={styles.gpsTitle} numberOfLines={1}>{geoData.city}, {geoData.region}, India 🇮🇳</Text>
          <Text style={styles.gpsAddress} numberOfLines={2}>{geoData.address}</Text>
          <Text style={styles.gpsCoords}>Lat {geoData.lat}° Long {geoData.lon}°</Text>
@@ -1261,7 +1311,7 @@ const styles = StyleSheet.create({
   swipeLeftBtn: { position: 'absolute', left: 10, top: '50%', zIndex: 20, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 25, padding: 5 },
   swipeRightBtn: { position: 'absolute', right: 10, top: '50%', zIndex: 20, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 25, padding: 5 },
 
-  cameraTopTools: { position: 'absolute', top: 20, width: '100%', flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 20, zIndex: 10 },
+  cameraTopTools: { position: 'absolute', top: 50, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 20, zIndex: 30 },
   cameraTopBtn: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 12, minWidth: 60 },
   cameraTopBtnText: { color: '#FFF', fontSize: 11, fontWeight: 'bold', marginTop: 4, textTransform: 'uppercase' },
 
@@ -1269,22 +1319,14 @@ const styles = StyleSheet.create({
   zoomBtn: { paddingHorizontal: 20, paddingVertical: 10 },
   zoomBtnText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
 
-  cameraControlsContainer: { flex: 1, width: '100%', flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 30, backgroundColor: '#000' },
+  cameraControlsContainer: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 30, zIndex: 30 },
   cameraSideBtn: { padding: 10, borderRadius: 30, width: 60, alignItems: 'center', justifyContent: 'center' },
   cameraCaptureBtnOuter: { width: 74, height: 74, borderRadius: 37, borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center' },
   cameraCaptureBtnInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFF' },
  
   gpsWaitingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 50 },
-  
-  gpsOverlayWrapper: { flexDirection: 'row', alignItems: 'center', margin: 15, maxWidth: '95%' },
-  gpsMapSquare: { width: 90, height: 90, backgroundColor: '#E2E8F0', borderRadius: 12, overflow: 'hidden', marginRight: 10 },
-  gpsFloatingBadge: { flex: 1, justifyContent: 'space-evenly', backgroundColor: 'rgba(15,15,15,0.85)', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, height: 90 },
-  gpsTitle: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
-  gpsAddress: { color: '#E2E8F0', fontSize: 11, lineHeight: 14 },
-  gpsCoords: { color: '#FFF', fontSize: 11, fontWeight: '600' },
-  gpsTime: { color: '#FFF', fontSize: 11 },
  
-  photoQueueToast: { position: 'absolute', top: 100, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, zIndex: 100 },
+  photoQueueToast: { position: 'absolute', top: 120, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, zIndex: 100 },
 
   reviewLabel: { fontSize: 14, fontWeight: '700', color: '#1E293B', marginTop: 15, marginBottom: 10 },
   reviewRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
@@ -1293,5 +1335,12 @@ const styles = StyleSheet.create({
   paramBtn: { flex: 1, paddingVertical: 10, borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 6, alignItems: 'center', backgroundColor: '#FFF' },
   paramBtnText: { color: '#475569', fontWeight: '600', fontSize: 12 },
   activeParam: { backgroundColor: '#EFF6FF', borderColor: '#2563EB' },
-  activeParamText: { color: '#2563EB', fontWeight: 'bold' }
+  activeParamText: { color: '#2563EB', fontWeight: 'bold' },
+
+  gpsMapSquare: { width: 75, height: 75, backgroundColor: '#E2E8F0', borderRadius: 8, overflow: 'hidden', marginRight: 10 },
+  gpsTextContainer: { justifyContent: 'space-evenly', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, height: 75, maxWidth: 280 },
+  gpsTitle: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
+  gpsAddress: { color: '#E2E8F0', fontSize: 10, lineHeight: 12 },
+  gpsCoords: { color: '#FFF', fontSize: 10, fontWeight: '600' },
+  gpsTime: { color: '#FFF', fontSize: 10 },
 });

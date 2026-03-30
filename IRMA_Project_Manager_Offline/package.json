@@ -1,7 +1,7 @@
 {
   "name": "irma_project_manager_offline",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "2.1.2",
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
@@ -77,6 +77,15 @@
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.2"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-zip-archive"
+        ]
+      }
+    }
   },
   "private": true
 }
