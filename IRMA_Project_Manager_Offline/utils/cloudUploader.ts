@@ -4,7 +4,7 @@ import { zip } from 'react-native-zip-archive';
 import { doc, getDoc } from 'firebase/firestore'; // Added to fetch unique ID
 import { db } from './firebaseConfig'; // Added to access Firestore
 
-const FIREBASE_BUCKET = 'irma-project-manager-offline.firebasestorage.app'; 
+const FIREBASE_BUCKET = 'irma-project-manager-2k26.firebasestorage.app'; 
 const SYNC_CACHE_FILE = `${FileSystem.documentDirectory}cloud_sync_cache.json`;
 
 const sanitizeNativePath = (path: string) => {

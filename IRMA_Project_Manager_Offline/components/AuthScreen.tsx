@@ -190,7 +190,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
 
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Email, User ID, or Phone</Text>
-                <TextInput style={styles.input} placeholder="e.g. agent@irma.com or john_doe" placeholderTextColor="#64748B" autoCapitalize="none" value={loginIdentifier} onChangeText={setLoginIdentifier} />
+                <TextInput style={styles.input} placeholder="e.g. agent@irma.com or user_irma" placeholderTextColor="#64748B" autoCapitalize="none" value={loginIdentifier} onChangeText={setLoginIdentifier} />
               </View>
 
               <View style={styles.inputGroup}>

@@ -22,7 +22,7 @@ import { InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { db } from '../utils/firebaseConfig';
 import { globalStyles } from '../styles/globalStyles';
 
-const GOOGLE_MAPS_API_KEY = "AIzaSyBJ_t7XtFa0vKHr9iDXFX8fcHvk9OGC_ec";
+const GOOGLE_MAPS_API_KEY = "AIzaSyCvXa2qgN2StFVT9N9LwuF1hpK57iuIzHg";//updated key for maps
 
 interface VisitManagerProps { projectId: string; tenderId: string; folderName: string; onEdit?: () => void; }
 
