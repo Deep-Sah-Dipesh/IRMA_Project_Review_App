@@ -19,10 +19,10 @@ import { doc, getDoc } from 'firebase/firestore';
 import { Accelerometer } from 'expo-sensors'; 
 import { InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av'; 
 
-import { db } from '../utils/firebaseConfig';
+import { db as firestoreDb } from '../utils/firebaseConfig';
 import { globalStyles } from '../styles/globalStyles';
 
-const GOOGLE_MAPS_API_KEY = "AIzaSyCvXa2qgN2StFVT9N9LwuF1hpK57iuIzHg";//updated key for maps
+const GOOGLE_MAPS_API_KEY = "AIzaSyCvXa2qgN2StFVT9N9LwuF1hpK57iuIzHg";
 
 interface VisitManagerProps { projectId: string; tenderId: string; folderName: string; onEdit?: () => void; }
 
@@ -50,6 +50,22 @@ const formatGeoDate = (d: Date) => {
 const ZOOM_STEPS = [0, 0.15, 0.3, 0.5, 0.75, 1.0];
 const ZOOM_LABELS = ['1x', '1.5x', '2x', '3x', '4x', '5x'];
 
+const getActiveUserId = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uId = parsedSession.userId;
+      try {
+        const userSnap = await getDoc(doc(firestoreDb, 'users', uId));
+        if (userSnap.exists() && userSnap.data().uniqueUserId) uId = userSnap.data().uniqueUserId;
+      } catch (e) { console.warn(e); }
+      return uId;
+    }
+  } catch(e) { console.warn(e); }
+  return 'AnonymousUser';
+};
+
 export default function VisitManager({ projectId, tenderId, folderName, onEdit }: VisitManagerProps) {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
 
@@ -68,6 +84,10 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
  
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewFileContent, setPreviewFileContent] = useState<string | null>(null);
+  const [imagePreviewZoom, setImagePreviewZoom] = useState(1);
+
+  const previewScrollY = useRef<ScrollView>(null);
+  const previewScrollX = useRef<ScrollView>(null);
 
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -90,6 +110,9 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
  
   const [showZoom, setShowZoom] = useState(false);
   const [zoomIndex, setZoomIndex] = useState(0); 
+  const zoomTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastZoomTap = useRef<number>(0);
+  const lastImageTap = useRef<number>(0);
   const [isCapturing, setIsCapturing] = useState(false);
   
   const [deviceOrientation, setDeviceOrientation] = useState(0); 
@@ -118,20 +141,10 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   ];
 
   useEffect(() => {
-    (async () => {
-      try {
-        const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-        if (sessionStr) {
-          const parsedSession = JSON.parse(sessionStr);
-          let uniqueId = parsedSession.userId;
-          try {
-            const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-            if (userSnap.exists() && userSnap.data().uniqueUserId) uniqueId = userSnap.data().uniqueUserId;
-          } catch (e) { }
-          setActiveUserId(uniqueId);
-        }
-      } catch(e) {}
-    })();
+    getActiveUserId().then(uid => setActiveUserId(uid));
+    return () => {
+      if (zoomTimeoutRef.current) clearTimeout(zoomTimeoutRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -165,6 +178,16 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
 
   useEffect(() => { return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); }; }, [recording]);
 
+  const extractCleanAddress = (addr: any) => {
+    const street = addr.street || addr.name || '';
+    const district = addr.district || addr.subregion || '';
+    const city = addr.city || '';
+    const postalCode = addr.postalCode || '';
+    
+    const parts = [street, district, city, postalCode].map(p => String(p).trim()).filter(p => p.length > 0);
+    return [...new Set(parts)].join(', ') || 'Unknown Location';
+  };
+
   useEffect(() => {
     let sub: Location.LocationSubscription;
     (async () => {
@@ -179,7 +202,10 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
           try {
             const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
             const addr = geocode[0] || {};
-            const newData = { lat: loc.coords.latitude.toFixed(6), lon: loc.coords.longitude.toFixed(6), timestamp: formatGeoDate(new Date(loc.timestamp)), address: `${addr.street || ''} ${addr.district || ''}, ${addr.city || ''} ${addr.postalCode || ''}`.trim() || 'Unknown Street', city: addr.city || addr.subregion || 'Unknown City', region: addr.region || 'Unknown Region', country: addr.country || 'India' };
+            
+            const detailedAddress = extractCleanAddress(addr);
+
+            const newData = { lat: loc.coords.latitude.toFixed(6), lon: loc.coords.longitude.toFixed(6), timestamp: formatGeoDate(new Date(loc.timestamp)), address: detailedAddress, city: addr.city || addr.subregion || 'Unknown City', region: addr.region || 'Unknown Region', country: addr.country || 'India' };
             sessionGeoDataRef.current = newData;
             setLiveGeoData(newData);
           } catch (e) {}
@@ -188,6 +214,38 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     })();
     return () => { if (sub) sub.remove(); }
   }, []);
+
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+    if (showLiveCamera) {
+      const forceFetchLocation = async () => {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+          const addr = geocode[0] || {};
+          
+          const detailedAddress = extractCleanAddress(addr);
+
+          const newData = { 
+            lat: loc.coords.latitude.toFixed(6), 
+            lon: loc.coords.longitude.toFixed(6), 
+            timestamp: formatGeoDate(new Date(loc.timestamp)), 
+            address: detailedAddress, 
+            city: addr.city || addr.subregion || 'Unknown City', 
+            region: addr.region || 'Unknown Region', 
+            country: addr.country || 'India' 
+          };
+          sessionGeoDataRef.current = newData;
+          setLiveGeoData(newData);
+        } catch (e) {}
+      };
+      forceFetchLocation(); 
+      intervalId = setInterval(forceFetchLocation, 8000); 
+    }
+    return () => {
+       if (intervalId) clearInterval(intervalId);
+    };
+  }, [showLiveCamera]);
 
   useEffect(() => {
     if (captureTrigger > 0 && captureQueue.length > 0 && viewShotRef.current) {
@@ -209,6 +267,45 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       }, 250); 
     }
   }, [captureTrigger, captureQueue]);
+
+  const resetZoomTimer = () => {
+    if (zoomTimeoutRef.current) clearTimeout(zoomTimeoutRef.current);
+    zoomTimeoutRef.current = setTimeout(() => setShowZoom(false), 3000);
+  };
+
+  const handleZoomTap = () => {
+    const now = Date.now();
+    if (now - lastZoomTap.current < 300) {
+      setZoomIndex(0); 
+      setShowZoom(false);
+      if (zoomTimeoutRef.current) clearTimeout(zoomTimeoutRef.current);
+    } else {
+      if (showZoom) {
+          setShowZoom(false);
+          if (zoomTimeoutRef.current) clearTimeout(zoomTimeoutRef.current);
+      } else {
+          setShowZoom(true);
+          resetZoomTimer();
+      }
+    }
+    lastZoomTap.current = now;
+  };
+
+  const changeZoom = (delta: number) => {
+    setZoomIndex(z => Math.max(0, Math.min(ZOOM_STEPS.length - 1, z + delta)));
+    resetZoomTimer();
+  };
+
+  const handleImagePreviewDoubleTap = () => {
+      // Temporarily disabled zooming functionality for image previews as requested
+      /*
+      const now = Date.now();
+      if (now - lastImageTap.current < 300) {
+          setImagePreviewZoom(prev => prev === 1 ? 2.5 : 1);
+      }
+      lastImageTap.current = now;
+      */
+  };
 
   const scanExistingVisits = async () => {
     if (activeUserId === 'AnonymousUser') return;
@@ -316,32 +413,42 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       
       const existingReview = files.find(f => f.startsWith('Field_Review_') && f.includes(`_${todayStr}_`));
 
-      if (existingReview) {
-        const content = await FileSystem.readAsStringAsync(`${targetDir}${existingReview}`);
-        const severityMatch = content.match(/SEVERITY STATUS:\s*(.+)/);
-        const qualityMatch = content.match(/1\. QUALITY:\s*(.+)/);
-        const timeMatch = content.match(/2\. TIME LIMIT:\s*(.+)/);
-        const outputMatch = content.match(/3\. OUTPUT:\s*(.+)/);
-
-        if (severityMatch) {
-            const sevLabel = severityMatch[1].trim();
-            const matchedSev = severityOptions.find(opt => opt.label.toUpperCase() === sevLabel.toUpperCase());
-            setReviewSeverity(matchedSev || null);
+      const openModal = async (reviewFile?: string) => {
+        if (reviewFile) {
+          const content = await FileSystem.readAsStringAsync(`${targetDir}${reviewFile}`);
+          const severityMatch = content.match(/SEVERITY STATUS:\s*(.+)/);
+          const qualityMatch = content.match(/1\. QUALITY:\s*(.+)/);
+          const timeMatch = content.match(/2\. TIME LIMIT:\s*(.+)/);
+          const outputMatch = content.match(/3\. OUTPUT:\s*(.+)/);
+  
+          if (severityMatch) {
+              const sevLabel = severityMatch[1].trim();
+              const matchedSev = severityOptions.find(opt => opt.label.toUpperCase() === sevLabel.toUpperCase());
+              setReviewSeverity(matchedSev || null);
+          }
+          setReviewParams({
+              quality: qualityMatch ? qualityMatch[1].trim() : 'Not Evaluated',
+              timeLimit: timeMatch ? timeMatch[1].trim() : 'On Schedule',
+              output: outputMatch ? outputMatch[1].trim() : 'Standard'
+          });
+          
+          setExistingReviewPath(`${targetDir}${reviewFile}`);
+        } else {
+          setReviewSeverity(null);
+          setReviewParams({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
+          setExistingReviewPath(null);
         }
-        setReviewParams({
-            quality: qualityMatch ? qualityMatch[1].trim() : 'Not Evaluated',
-            timeLimit: timeMatch ? timeMatch[1].trim() : 'On Schedule',
-            output: outputMatch ? outputMatch[1].trim() : 'Standard'
-        });
-        
-        setExistingReviewPath(`${targetDir}${existingReview}`);
-        Alert.alert('Edit Mode', 'Opening your existing review for today. Modifying and saving will update the current file.');
+        setShowReviewModal(true);
+      };
+
+      if (existingReview) {
+        Alert.alert('Edit Mode', 'A field review already exists for today. Do you want to open and modify it?', [
+          { text: "Cancel", style: "cancel" },
+          { text: "OK", onPress: () => openModal(existingReview) }
+        ]);
       } else {
-        setReviewSeverity(null);
-        setReviewParams({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
-        setExistingReviewPath(null);
+        openModal();
       }
-      setShowReviewModal(true);
     } catch (e) {
       setReviewSeverity(null);
       setReviewParams({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
@@ -582,7 +689,7 @@ Generated by Project Manager`;
     }
   };
 
-  const cycleFlashMode = () => setFlashMode(f => f === 'auto' ? 'on' : f === 'on' ? 'off' : 'auto');
+  const cycleFlashMode = () => setFlashMode(f => f === 'auto' ? 'off' : f === 'off' ? 'on' : 'auto');
 
   const handleCaptureNormalMedia = async (mediaType: 'photo' | 'video') => {
     try {
@@ -765,6 +872,7 @@ Generated by Project Manager`;
       }
      
       setPreviewIndex(index);
+      setImagePreviewZoom(1); 
   };
 
   const getNextMediaIndex = (currentIndex: number) => {
@@ -787,6 +895,10 @@ Generated by Project Manager`;
   const currentPreviewType = currentPreviewFile ? getFileType(currentPreviewFile.name) : null;
   const nextMediaIdx = previewIndex !== null ? getNextMediaIndex(previewIndex) : null;
   const prevMediaIdx = previewIndex !== null ? getPrevMediaIndex(previewIndex) : null;
+
+  const isLandscapeMode = deviceOrientation === 90 || deviceOrientation === -90;
+  const overlayContainerWidth = isLandscapeMode ? CAMERA_HEIGHT : SCREEN_WIDTH;
+  const overlayContainerHeight = isLandscapeMode ? SCREEN_WIDTH : CAMERA_HEIGHT;
 
   return (
     <View style={[globalStyles.card, { padding: 16, marginBottom: 10, paddingBottom: 16 }]}>
@@ -812,7 +924,7 @@ Generated by Project Manager`;
             </View>
           </View>
           {fileStats.total > 0 && (
-            <View style={styles.statsContainer}>
+            <View style={[styles.statsContainer, { alignItems: 'center' }]}>
               <Text style={styles.statsTitle}>Saved Files: {fileStats.total}</Text>
               <View style={styles.statsRow}>
                 {Object.entries(fileStats).map(([key, count]) => {
@@ -881,13 +993,15 @@ Generated by Project Manager`;
                    
                    const shotW = isLandscape ? (is43 ? 1440 : 1920) : 1080;
                    const shotH = isLandscape ? 1080 : (is43 ? 1440 : 1920);
+                   
+                   const scaleRatio = shotW / Math.min(SCREEN_WIDTH, SCREEN_HEIGHT);
 
                    return (
                       <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: shotW, height: shotH, backgroundColor: '#000' }} collapsable={false}>
                         <Image source={{ uri: item.uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} collapsable={false} />
                         
-                        <View style={{ position: 'absolute', bottom: 15, left: 0, right: 0, alignItems: 'center' }} collapsable={false}>
-                           <GPSCameraOverlay geoData={item.geoData} scale={shotW / SCREEN_WIDTH} isLive={false} />
+                        <View style={{ position: 'absolute', bottom: 4 * scaleRatio, left: 0, right: 0, alignItems: 'center' }} collapsable={false}>
+                           <GPSCameraOverlay geoData={item.geoData} sizeRatio={scaleRatio} isLandscape={isLandscape} />
                         </View>
                       </ViewShot>
                    );
@@ -914,8 +1028,19 @@ Generated by Project Manager`;
                  </TouchableWithoutFeedback>
 
                  {!isDocScannerMode && liveGeoData && (
-                   <View style={{ position: 'absolute', bottom: 15, left: 0, right: 0, alignItems: 'center', pointerEvents: 'none' }}>
-                      <GPSCameraOverlay geoData={liveGeoData} scale={1} isLive={true} />
+                   <View style={{ 
+                      position: 'absolute', 
+                      width: overlayContainerWidth, 
+                      height: overlayContainerHeight, 
+                      top: (CAMERA_HEIGHT - overlayContainerHeight) / 2, 
+                      left: (SCREEN_WIDTH - overlayContainerWidth) / 2, 
+                      justifyContent: 'flex-end', 
+                      alignItems: 'center', 
+                      paddingBottom: 4, 
+                      transform: [{ rotate: `${-deviceOrientation}deg` }], 
+                      pointerEvents: 'none' 
+                   }}>
+                      <GPSCameraOverlay geoData={liveGeoData} sizeRatio={1} isLandscape={isLandscapeMode} />
                    </View>
                  )}
                </View>
@@ -928,14 +1053,14 @@ Generated by Project Manager`;
                </TouchableOpacity>
 
                <View style={{ alignItems: 'center' }} pointerEvents="box-none">
-                  <TouchableOpacity onPress={() => setShowZoom(!showZoom)} style={[styles.cameraTopBtn, showZoom && { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
+                  <TouchableOpacity onPress={handleZoomTap} style={[styles.cameraTopBtn, showZoom && { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
                      <Ionicons name="search" size={24} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
                      <Text style={[styles.cameraTopBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>{ZOOM_LABELS[zoomIndex]}</Text>
                   </TouchableOpacity>
                   {showZoom && (
-                     <View style={styles.zoomControls}>
-                        <TouchableOpacity onPress={() => setZoomIndex(z => Math.max(0, z - 1))} style={styles.zoomBtn}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>-</Text></TouchableOpacity>
-                        <TouchableOpacity onPress={() => setZoomIndex(z => Math.min(ZOOM_STEPS.length - 1, z + 1))} style={styles.zoomBtn}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>+</Text></TouchableOpacity>
+                     <View style={isLandscapeMode ? styles.zoomControlsHorizontal : styles.zoomControlsPortrait}>
+                        <TouchableOpacity onPress={() => changeZoom(-1)} style={styles.zoomBtnHorizontal}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>-</Text></TouchableOpacity>
+                        <TouchableOpacity onPress={() => changeZoom(1)} style={styles.zoomBtnHorizontal}><Text style={[styles.zoomBtnText, { transform: [{ rotate: `${-deviceOrientation}deg` }] }]}>+</Text></TouchableOpacity>
                      </View>
                   )}
                </View>
@@ -947,7 +1072,7 @@ Generated by Project Manager`;
             </View>
 
             <View style={styles.cameraControlsContainer} pointerEvents="box-none">
-               <TouchableOpacity onPress={() => setShowLiveCamera(false)} style={styles.cameraSideBtn}>
+               <TouchableOpacity disabled={isCapturing || isCompilingPDF} onPress={() => setShowLiveCamera(false)} style={[styles.cameraSideBtn, (isCapturing || isCompilingPDF) && { opacity: 0.5 }]}>
                  <Ionicons name="close" size={36} color="#FFF" style={{ transform: [{ rotate: `${-deviceOrientation}deg` }] }} />
                </TouchableOpacity>
                
@@ -978,7 +1103,6 @@ Generated by Project Manager`;
          </View>
       </Modal>
 
-      {/* VISITS MODAL */}
       <Modal visible={showVisitModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowVisitModal(false)}>
           <View style={styles.modalOverlay}>
@@ -1001,7 +1125,6 @@ Generated by Project Manager`;
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* RATE/REVIEW MODAL */}
       <Modal visible={showReviewModal} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F8FAFC' }]}>
           <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}>
@@ -1061,7 +1184,6 @@ Generated by Project Manager`;
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* TEXT COMMENT MODAL */}
       <Modal visible={showCommentModal} transparent animationType="slide">
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F1F5F9' }]}>
           <View style={[styles.modalContent, { paddingBottom: 30, backgroundColor: '#F1F5F9', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 40 }]}>
@@ -1084,7 +1206,6 @@ Generated by Project Manager`;
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* FILES EXPLORER MODAL */}
       <Modal visible={showFilesModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setShowFilesModal(false)}>
           <View style={styles.modalOverlay}>
@@ -1130,7 +1251,6 @@ Generated by Project Manager`;
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* SWIPEABLE FILE PREVIEW MODAL */}
       <Modal visible={previewIndex !== null} transparent animationType="slide">
         <View style={styles.previewOverlay}>
           <View style={styles.previewHeader}>
@@ -1139,14 +1259,24 @@ Generated by Project Manager`;
           </View>
          
           <View style={styles.previewContainer}>
-            {prevMediaIdx !== null && (
+            {prevMediaIdx !== null && imagePreviewZoom === 1 && (
                 <TouchableOpacity style={styles.swipeLeftBtn} onPress={() => triggerPreview(prevMediaIdx)}>
-                    <Ionicons name="chevron-back" size={36} color="#FFF" />
+                    <Ionicons name="chevron-back" size={24} color="#FFF" />
                 </TouchableOpacity>
             )}
 
             {currentPreviewType === 'text' && <ScrollView style={styles.previewTextWrapper}><Text style={styles.previewText}>{previewFileContent}</Text></ScrollView>}
-            {currentPreviewType === 'image' && <Image source={{ uri: currentPreviewFile?.uri }} style={{ width: '100%', height: '100%', resizeMode: 'contain' }} />}
+            
+            {currentPreviewType === 'image' && (
+              <View style={{ flex: 1, width: '100%', height: '100%', backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
+                 {/* Zooming and panning temporarily commented out as requested */}
+                 <Image 
+                     source={{ uri: currentPreviewFile?.uri }} 
+                     style={{ width: '100%', height: '100%', resizeMode: 'contain' }} 
+                 />
+              </View>
+            )}
+            
             {currentPreviewType === 'video' && <VideoPreview uri={currentPreviewFile?.uri!} />}
             {currentPreviewType === 'audio' && <AudioPreview uri={currentPreviewFile?.uri!} />}
             
@@ -1158,19 +1288,20 @@ Generated by Project Manager`;
                         try {
                             const content = await FileSystem.readAsStringAsync(currentPreviewFile!.uri);
                             const coordMatch = content.match(/<coordinates>([^,]+),([^,]+)/);
-                            if (coordMatch) Linking.openURL(`https://maps.google.com/?q=${coordMatch[2]},${coordMatch[1]}`);
+                            if (coordMatch) Linking.openURL(`https://maps.google.com/?daddr=${coordMatch[2]},${coordMatch[1]}`);
+                            else Alert.alert("Error", "Could not read GPS location from this file.");
                         } catch (e) {
                             Alert.alert("Error", "Could not read GPS location from this file.");
                         }
                     }}>
-                        <Text style={globalStyles.primaryBtnText}>Locate on Map</Text>
+                        <Text style={globalStyles.primaryBtnText}>Get Directions</Text>
                     </TouchableOpacity>
                 </View>
             )}
 
-            {nextMediaIdx !== null && (
+            {nextMediaIdx !== null && imagePreviewZoom === 1 && (
                 <TouchableOpacity style={styles.swipeRightBtn} onPress={() => triggerPreview(nextMediaIdx)}>
-                    <Ionicons name="chevron-forward" size={36} color="#FFF" />
+                    <Ionicons name="chevron-forward" size={24} color="#FFF" />
                 </TouchableOpacity>
             )}
           </View>
@@ -1212,32 +1343,33 @@ const AudioPreview = ({ uri }: { uri: string }) => {
   );
 };
 
-const GPSCameraOverlay = ({ geoData, scale = 1, isLive = false }: { geoData: any, scale?: number, isLive?: boolean }) => {
+const GPSCameraOverlay = ({ geoData, sizeRatio = 1, isLandscape = false }: { geoData: any, sizeRatio?: number, isLandscape?: boolean }) => {
   const [liveTime, setLiveTime] = useState(geoData.timestamp);
  
   useEffect(() => {
-     if (!isLive) return;
      const interval = setInterval(() => setLiveTime(formatGeoDate(new Date())), 1000);
      return () => clearInterval(interval);
-  }, [isLive]);
+  }, []);
 
-  const displayTime = isLive ? liveTime : geoData.timestamp;
+  const displayTime = geoData.timestamp === liveTime ? liveTime : geoData.timestamp;
 
+  // By requesting a much larger API image size (400x400), the static Maps data text becomes relatively small compared to the overall image width, preventing any server-side API text truncation.
   const mapUrl = GOOGLE_MAPS_API_KEY
-    ? `https://maps.googleapis.com/maps/api/staticmap?center=${geoData.lat},${geoData.lon}&zoom=15&size=200x200&markers=color:red%7C${geoData.lat},${geoData.lon}&key=${GOOGLE_MAPS_API_KEY}`
+    ? `https://maps.googleapis.com/maps/api/staticmap?center=${geoData.lat},${geoData.lon}&zoom=15&size=400x400&scale=2&markers=color:red%7C${geoData.lat},${geoData.lon}&key=${GOOGLE_MAPS_API_KEY}`
     : `https://staticmap.openstreetmap.de/staticmap.php?center=${geoData.lat},${geoData.lon}&zoom=16&size=400x400&maptype=mapnik&markers=${geoData.lat},${geoData.lon},red-pushpin&t=${Date.now()}`;
  
   return (
-    <View style={{ transform: [{ scale }], transformOrigin: 'bottom', flexDirection: 'row', alignItems: 'center' }} collapsable={false}>
-      <View style={styles.gpsMapSquare} collapsable={false}>
-         {geoData.lat === "0.000000" ? <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={24} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ width: '100%', height: '100%' }} collapsable={false} />}
+    <View style={{ flexDirection: 'row', alignItems: 'stretch', alignSelf: 'center', maxWidth: '95%' }} collapsable={false}>
+      {/* Aspect Ratio 1.1 with flexShrink: 0 and resizeMode: contain strictly ensures the scaled-down map never crops its borders horizontally, keeping both the logo and text beautifully intact inside the bounds. */}
+      <View style={{ aspectRatio: 1.1, borderRadius: 6 * sizeRatio, overflow: 'hidden', marginRight: 6 * sizeRatio, backgroundColor: '#E2E8F0', flexShrink: 0 }} collapsable={false}>
+         {geoData.lat === "0.000000" ? <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={24 * sizeRatio} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ flex: 1, width: '100%', height: '100%', resizeMode: 'contain' }} collapsable={false} />}
       </View>
 
-      <View style={styles.gpsTextContainer} collapsable={false}>
-         <Text style={styles.gpsTitle} numberOfLines={1}>{geoData.city}, {geoData.region}, India 🇮🇳</Text>
-         <Text style={styles.gpsAddress} numberOfLines={2}>{geoData.address}</Text>
-         <Text style={styles.gpsCoords}>Lat {geoData.lat}° Long {geoData.lon}°</Text>
-         <Text style={styles.gpsTime}>{displayTime}</Text>
+      <View style={{ flexShrink: 1, backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 6 * sizeRatio, paddingVertical: 4 * sizeRatio, borderRadius: 6 * sizeRatio, justifyContent: 'center' }} collapsable={false}>
+         <Text style={{ color: '#FFF', fontSize: 11 * sizeRatio, fontWeight: 'bold', marginBottom: 1 * sizeRatio, letterSpacing: isLandscape ? 0.5 : 0, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 2, padding: 0 }} numberOfLines={1}>{geoData.city}, {geoData.region}, India 🇮🇳</Text>
+         <Text style={{ color: '#E2E8F0', fontSize: 10 * sizeRatio, marginBottom: 1 * sizeRatio, letterSpacing: isLandscape ? 0.3 : 0, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 2, padding: 0 }} numberOfLines={2}>{geoData.address}</Text>
+         <Text style={{ color: '#F8FAFC', fontSize: 9 * sizeRatio, fontWeight: 'bold', marginBottom: 1 * sizeRatio, letterSpacing: isLandscape ? 0.3 : 0, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 2, padding: 0 }}>Lat {geoData.lat}° Long {geoData.lon}°</Text>
+         <Text style={{ color: '#F8FAFC', fontSize: 9 * sizeRatio, letterSpacing: isLandscape ? 0.3 : 0, textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 2, padding: 0 }}>{displayTime}</Text>
       </View>
     </View>
   );
@@ -1253,81 +1385,68 @@ const ActionButton = ({ icon, label, color, disabled, onPress, style }: any) => 
 const styles = StyleSheet.create({
   visitSectionHeader: { fontSize: 13, fontWeight: '800', color: '#475569', textAlign: 'center', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
   visitControls: { flexDirection: 'row', justifyContent: 'space-between' },
-  visitBtnLight: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', flex: 1, marginRight: 10 },
-  visitBtnDark: { flexDirection: 'row', padding: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#2563EB', flex: 1 },
-  activeVisitBox: { flexDirection: 'row', backgroundColor: '#DCFCE7', padding: 16, borderRadius: 10, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#BBF7D0' },
-  activeVisitLabel: { color: '#166534', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginBottom: 2 },
-  activeVisitText: { color: '#14532D', fontSize: 15, fontWeight: '800' },
-  statsContainer: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 10, marginBottom: 20, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
-  statsTitle: { fontSize: 16, fontWeight: 'bold', color: '#1E293B', marginBottom: 10 },
-  statsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
-  statBadge: { backgroundColor: '#DBEAFE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#BFDBFE' },
-  statBadgeText: { fontSize: 12, color: '#1E40AF', fontWeight: '700', textTransform: 'capitalize' },
-  noVisitText: { color: '#94A3B8', fontSize: 13, textAlign: 'center', marginBottom: 15, fontStyle: 'italic' },
-  recordingUIBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FEF2F2', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', marginBottom: 15 },
-  redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#EF4444', marginRight: 8 },
-  recordingTime: { fontSize: 16, fontWeight: 'bold', color: '#991B1B' },
-  recordControlBtn: { flexDirection: 'row', alignItems: 'center', padding: 10, borderRadius: 8 },
- 
-  actionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 0, marginBottom: 0 },
-  actionBtn: { width: '31.5%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 10 },
-  actionIconWrap: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  actionLabel: { fontSize: 10, fontWeight: '700', color: '#475569', textAlign: 'center' },
- 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20 },
+  visitBtnLight: { backgroundColor: '#F1F5F9', paddingVertical: 12, borderRadius: 8, flex: 1, marginRight: 5, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  visitBtnDark: { backgroundColor: '#2563EB', paddingVertical: 12, borderRadius: 8, flex: 1, marginLeft: 5, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+  activeVisitBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', padding: 15, borderRadius: 10, marginBottom: 15, borderWidth: 1, borderColor: '#BBF7D0' },
+  activeVisitLabel: { fontSize: 12, color: '#166534', fontWeight: 'bold', textTransform: 'uppercase' },
+  activeVisitText: { fontSize: 14, color: '#14532D', fontWeight: '800', marginTop: 2 },
+  noVisitText: { textAlign: 'center', color: '#64748B', fontStyle: 'italic', marginBottom: 15 },
+  statsContainer: { backgroundColor: '#F8FAFC', padding: 15, borderRadius: 10, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0' },
+  statsTitle: { fontSize: 13, fontWeight: 'bold', color: '#475569', marginBottom: 10, textAlign: 'center' },
+  statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
+  statBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  statBadgeText: { fontSize: 11, color: '#2563EB', fontWeight: '700', textTransform: 'capitalize' },
+  recordingUIBox: { backgroundColor: '#FFF', padding: 15, borderRadius: 12, marginBottom: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#EF4444' },
+  recordingTime: { fontSize: 18, fontWeight: 'bold', color: '#EF4444', marginLeft: 10 },
+  redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#EF4444' },
+  recordControlBtn: { paddingHorizontal: 15, paddingVertical: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' },
+  actionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  actionBtn: { width: '31%', backgroundColor: '#FFF', paddingVertical: 15, paddingHorizontal: 5, borderRadius: 12, alignItems: 'center', marginBottom: 10, elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, borderWidth: 1, borderColor: '#F1F5F9' },
+  actionIconWrap: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  actionLabel: { fontSize: 11, fontWeight: '700', color: '#475569', textAlign: 'center' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '80%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#1E293B' },
-  modalItem: { flexDirection: 'row', justifyContent: 'space-between', padding: 18, borderBottomWidth: 1, borderColor: '#F1F5F9', alignItems: 'center' },
+  modalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#F1F5F9' },
+  modalItemText: { fontSize: 15, color: '#475569' },
   modalItemSelected: { backgroundColor: '#EFF6FF' },
-  modalItemText: { fontSize: 16, color: '#334155' },
- 
-  commentToolbar: { flexDirection: 'row', marginBottom: 10 },
-  toolbarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', marginRight: 8 },
-  toolbarBtnText: { marginLeft: 4, fontWeight: 'bold', color: '#334155', fontSize: 12 },
- 
-  filterControls: { flexDirection: 'row', paddingHorizontal: 15, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#E2E8F0' },
-  controlChip: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#EFF6FF', borderRadius: 16, marginRight: 8, borderWidth: 1, borderColor: '#BFDBFE', justifyContent: 'center' },
-  controlChipText: { color: '#2563EB', fontSize: 12, fontWeight: 'bold' },
-  fileItemRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', marginHorizontal: 15, marginBottom: 10, borderRadius: 10, borderWidth: 1, borderColor: '#F1F5F9' },
-  fileItemContent: { flex: 1, flexDirection: 'row', alignItems: 'center', padding: 15 },
-  fileItemName: { fontSize: 14, color: '#1E293B', fontWeight: '700' },
-  fileItemFolder: { fontSize: 11, color: '#64748B', textTransform: 'uppercase', marginTop: 2, fontWeight: '600' },
-  fileItemSize: { fontSize: 12, color: '#94A3B8', fontWeight: 'bold', paddingHorizontal: 10 },
-  deleteFileBtn: { padding: 15, borderLeftWidth: 1, borderColor: '#E2E8F0' },
- 
+  commentToolbar: { flexDirection: 'row', marginBottom: 10, borderBottomWidth: 1, borderColor: '#E2E8F0', paddingBottom: 10 },
+  toolbarBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, marginRight: 10 },
+  toolbarBtnText: { color: '#2563EB', fontWeight: 'bold', fontSize: 12, marginLeft: 4 },
+  filterControls: { flexDirection: 'row', padding: 15, borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  controlChip: { paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', marginRight: 10 },
+  controlChipText: { fontSize: 12, fontWeight: 'bold', color: '#475569' },
+  fileItemRow: { flexDirection: 'row', alignItems: 'center', padding: 15, borderBottomWidth: 1, borderColor: '#F1F5F9' },
+  fileItemContent: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+  fileItemName: { fontSize: 14, fontWeight: '600', color: '#1E293B', marginBottom: 2 },
+  fileItemFolder: { fontSize: 11, color: '#64748B', fontWeight: '600' },
+  fileItemSize: { fontSize: 12, color: '#94A3B8', fontWeight: '600', marginLeft: 10 },
+  deleteFileBtn: { padding: 10, marginLeft: 5 },
   previewOverlay: { flex: 1, backgroundColor: '#000' },
-  previewHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 15, paddingTop: 50, paddingBottom: 15, backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 10 },
-  previewTitle: { color: '#FFF', fontSize: 16, fontWeight: 'bold', flex: 1, marginRight: 20 },
-  previewContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
-  previewTextWrapper: { flex: 1, width: '100%', backgroundColor: '#FFF', padding: 20 },
-  previewText: { fontSize: 16, color: '#1E293B', lineHeight: 24 },
-  videoWrapper: { flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center' },
-  audioTextLabel: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-  audioProgressContainer: { width: '80%', marginTop: 20 },
-  audioProgressBarBg: { width: '100%', height: 6, backgroundColor: '#334155', borderRadius: 3 },
-  audioProgressBarFill: { height: 6, backgroundColor: '#2563EB', borderRadius: 3 },
- 
-  swipeLeftBtn: { position: 'absolute', left: 10, top: '50%', zIndex: 20, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 25, padding: 5 },
-  swipeRightBtn: { position: 'absolute', right: 10, top: '50%', zIndex: 20, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 25, padding: 5 },
-
-  cameraTopTools: { position: 'absolute', top: 50, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-start', gap: 20, zIndex: 30 },
-  cameraTopBtn: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 12, minWidth: 60 },
-  cameraTopBtnText: { color: '#FFF', fontSize: 11, fontWeight: 'bold', marginTop: 4, textTransform: 'uppercase' },
-
-  zoomControls: { flexDirection: 'row', marginTop: 10, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, overflow: 'hidden' },
-  zoomBtn: { paddingHorizontal: 20, paddingVertical: 10 },
-  zoomBtnText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-
-  cameraControlsContainer: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 30, zIndex: 30 },
-  cameraSideBtn: { padding: 10, borderRadius: 30, width: 60, alignItems: 'center', justifyContent: 'center' },
-  cameraCaptureBtnOuter: { width: 74, height: 74, borderRadius: 37, borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center' },
-  cameraCaptureBtnInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFF' },
- 
-  gpsWaitingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 50 },
- 
+  previewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 50, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 10 },
+  previewTitle: { color: '#FFF', fontSize: 16, fontWeight: 'bold', flex: 1, marginRight: 15 },
+  previewContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  swipeLeftBtn: { position: 'absolute', left: 15, top: '50%', zIndex: 50, padding: 8, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20 },
+  swipeRightBtn: { position: 'absolute', right: 15, top: '50%', zIndex: 50, padding: 8, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20 },
+  previewTextWrapper: { flex: 1, width: '100%', padding: 20, backgroundColor: '#FFF' },
+  previewText: { fontSize: 16, color: '#334155', lineHeight: 24 },
+  videoWrapper: { flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' },
+  audioTextLabel: { color: '#FFF', fontSize: 18, fontWeight: 'bold', marginBottom: 20 },
+  audioProgressContainer: { width: '80%', height: 6, backgroundColor: '#334155', borderRadius: 3, overflow: 'hidden' },
+  audioProgressBarBg: { flex: 1, backgroundColor: '#475569' },
+  audioProgressBarFill: { height: '100%', backgroundColor: '#2563EB' },
+  cameraTopBtn: { backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, alignItems: 'center', justifyContent: 'center', minWidth: 60 },
+  cameraTopBtnText: { color: '#FFF', fontSize: 12, fontWeight: 'bold', marginTop: 4 },
+  zoomControlsHorizontal: { position: 'absolute', left: 60, top: 0, flexDirection: 'column', backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 20, paddingVertical: 10, alignItems: 'center', width: 44, gap: 10 },
+  zoomControlsPortrait: { position: 'absolute', top: 55, flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 20, paddingHorizontal: 15, alignItems: 'center', height: 44, gap: 20 },
+  zoomBtnHorizontal: { padding: 10, justifyContent: 'center', alignItems: 'center' },
+  zoomBtnText: { color: '#FFF', fontSize: 24, fontWeight: 'bold' },
+  cameraControlsContainer: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 30, zIndex: 50 },
+  cameraSideBtn: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  cameraCaptureBtnOuter: { width: 76, height: 76, borderRadius: 38, borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center' },
+  cameraCaptureBtnInner: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#FFF' },
   photoQueueToast: { position: 'absolute', top: 120, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, zIndex: 100 },
-
   reviewLabel: { fontSize: 14, fontWeight: '700', color: '#1E293B', marginTop: 15, marginBottom: 10 },
   reviewRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   sevBtn: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
@@ -1336,11 +1455,5 @@ const styles = StyleSheet.create({
   paramBtnText: { color: '#475569', fontWeight: '600', fontSize: 12 },
   activeParam: { backgroundColor: '#EFF6FF', borderColor: '#2563EB' },
   activeParamText: { color: '#2563EB', fontWeight: 'bold' },
-
-  gpsMapSquare: { width: 75, height: 75, backgroundColor: '#E2E8F0', borderRadius: 8, overflow: 'hidden', marginRight: 10 },
-  gpsTextContainer: { justifyContent: 'space-evenly', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, height: 75, maxWidth: 280 },
-  gpsTitle: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
-  gpsAddress: { color: '#E2E8F0', fontSize: 10, lineHeight: 12 },
-  gpsCoords: { color: '#FFF', fontSize: 10, fontWeight: '600' },
-  gpsTime: { color: '#FFF', fontSize: 10 },
+  gpsWaitingOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', zIndex: 10 }
 });

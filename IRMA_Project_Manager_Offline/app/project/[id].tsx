@@ -15,10 +15,8 @@ const { StorageAccessFramework } = FileSystem;
 
 import VisitManager from '../../components/VisitManager';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
-import { db } from '../../utils/firebaseConfig';
+import { db as firestoreDb } from '../../utils/firebaseConfig';
 import { globalStyles } from '../../styles/globalStyles';
-import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
-import { useUserStore } from '../../store/userStore';
 
 const parseDateString = (dateStr: string) => {
   if (!dateStr) return 0;
@@ -37,11 +35,49 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
+const getActiveUserId = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uId = parsedSession.uniqueUserId || parsedSession.userId;
+      try {
+        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().uniqueUserId) {
+            uId = userSnap.data().uniqueUserId;
+            // Ensure uniqueUserId caches securely locally immediately
+            if (parsedSession.uniqueUserId !== uId) {
+                parsedSession.uniqueUserId = uId;
+                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
+            }
+        }
+      } catch (e) { console.warn(e); }
+      return uId || 'AnonymousUser';
+    }
+  } catch(e) { console.warn(e); }
+  return 'AnonymousUser';
+};
+
+const getActiveUsername = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uName = parsedSession.username || parsedSession.uniqueUserId || parsedSession.userId || 'AnonymousUser';
+      try {
+        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().username) uName = userSnap.data().username;
+      } catch (e) { }
+      return uName;
+    }
+  } catch(e) {}
+  return 'AnonymousUser';
+};
+
 export default function ProjectDetails() {
   const params = useLocalSearchParams();
   const router = useRouter();
   const sqlDb = SQLite.useSQLiteContext();
-  const store = useUserStore(); // [FIX: Store initialized for isAlreadyPlanned check]
   
   const rawId = typeof params.id === 'string' ? params.id : (Array.isArray(params.id) ? params.id[0] : 'UNKNOWN_PROJ');
   const rawTenderId = typeof params.tender_id === 'string' ? params.tender_id : (Array.isArray(params.tender_id) ? params.tender_id[0] : 'UNKNOWN_TENDER');
@@ -49,15 +85,17 @@ export default function ProjectDetails() {
   const projectId = decodeURIComponent(rawId);
   const tenderId = decodeURIComponent(rawTenderId);
   
-  // Sanitize folder name exactly as the Dashboard logic does
-  const sanitizedFolder = `${projectId}_${tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const defaultFolder = `${projectId}_${tenderId || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
   
   const [activeTab, setActiveTab] = useState<'details' | 'visits'>('details');
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
   const [project, setProject] = useState<any>(null);
+  
+  const [activeFolder, setActiveFolder] = useState(defaultFolder);
   const [hasKml, setHasKml] = useState(false);
   const [lastVisited, setLastVisited] = useState<string | null>(null);
+  const [plannerItems, setPlannerItems] = useState<any[]>([]); 
   
   const [latestObs, setLatestObs] = useState<any[]>([]);
   const [prevObs, setPrevObs] = useState<any[]>([]);
@@ -68,30 +106,12 @@ export default function ProjectDetails() {
   const [exportState, setExportState] = useState<{ active: boolean, status: string, isCancellable: boolean }>({ active: false, status: '', isCancellable: false });
   const isExportingRef = useRef(false);
 
-  // [FIX: Logic synced with Dashboard to ensure paths match the UID sandbox]
-  const getUserId = async () => {
-    try {
-      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-      if (sessionStr) {
-        const parsedSession = JSON.parse(sessionStr);
-        let uniqueId = parsedSession.userId;
-        try {
-          const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-          if (userSnap.exists() && userSnap.data().uniqueUserId) uniqueId = userSnap.data().uniqueUserId;
-        } catch (e) {}
-        return uniqueId;
-      }
-    } catch(e) {}
-    return 'AnonymousUser';
-  };
-
   const loadData = useCallback(async () => {
     if (!projectId || projectId === 'UNKNOWN_PROJ') return;
     setLoading(true); setDbError(null);
     try {
-      const userId = await getUserId();
+      const userId = await getActiveUserId();
       
-      // Query against the new snake_case schema created by the Python script
       let tenderData: any = {};
       try {
          tenderData = sqlDb.getFirstSync(`SELECT * FROM tenders WHERE project_id = ? AND tender_id = ? LIMIT 1`, [projectId, tenderId]);
@@ -130,15 +150,29 @@ export default function ProjectDetails() {
         setPrevObs(sortedObs.length > 1 ? sortedObs.slice(1) : []);
       }
 
-      // [FIX: Last Visited Date Scan Logic]
-      const path = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+      // Deeply resolve actual folder on disk vs fallback sanitized name
+      let resolvedFolder = defaultFolder;
+      const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
+      try {
+          const info = await FileSystem.getInfoAsync(baseDir);
+          if (info.exists) {
+              const folders = await FileSystem.readDirectoryAsync(baseDir);
+              const cleanProjId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_');
+              const matched = folders.find(f => f !== 'SQLite' && !f.endsWith('.json') && f.includes(cleanProjId));
+              if (matched) resolvedFolder = matched;
+          }
+      } catch(e) {}
+      setActiveFolder(resolvedFolder);
+
+      // Extract Last Visited String
+      const path = `${baseDir}${resolvedFolder}/`;
       try {
           const files = await FileSystem.readDirectoryAsync(path);
           let latestDateStr = '';
           for(const f of files) {
               if(f.startsWith('VISIT_')) {
                   const parts = f.split('_');
-                  const datePart = parts[2]; // Extracts YYYYMMDD
+                  const datePart = parts[2];
                   if(datePart && datePart.length === 8 && datePart > latestDateStr) {
                       latestDateStr = datePart;
                   }
@@ -153,54 +187,109 @@ export default function ProjectDetails() {
           setLastVisited('Not visited yet');
       }
 
+      // Check recursive KML inside resolvedFolder
+      let foundKml = false;
+      const checkDir = async (dirPath: string) => {
+        if (foundKml) return;
+        try {
+            const dInfo = await FileSystem.getInfoAsync(dirPath);
+            if (!dInfo.exists || !dInfo.isDirectory) return;
+            const items = await FileSystem.readDirectoryAsync(dirPath);
+            for (const item of items) {
+                if (foundKml) return;
+                if (item.toLowerCase().endsWith('.kml')) { foundKml = true; return; }
+                const subPath = `${dirPath}${item}`;
+                const subInfo = await FileSystem.getInfoAsync(subPath);
+                if (subInfo.isDirectory) await checkDir(`${subPath}/`);
+            }
+        } catch(e) {}
+      };
+      await checkDir(path);
+      setHasKml(foundKml);
+
+      // Planner load
+      try {
+          const plannerPath = `${baseDir}planner_cache.json`;
+          const plannerInfo = await FileSystem.getInfoAsync(plannerPath);
+          if (plannerInfo.exists) {
+              setPlannerItems(JSON.parse(await FileSystem.readAsStringAsync(plannerPath)));
+          }
+      } catch(e) {}
+
       setLoading(false);
     } catch (error: any) {
       setDbError(`Database Interruption: ${error.message}`); setLoading(false);
     }
-  }, [projectId, tenderId, sqlDb, sanitizedFolder]);
+  }, [projectId, tenderId, sqlDb, defaultFolder]);
 
   useEffect(() => {
     let isMounted = true;
     if (!projectId) return;
     const timeout = setTimeout(() => { 
-      if (isMounted) {
-        loadData(); 
-        getProjectsWithLocalKmls().then(kmls => {
-          if (isMounted) setHasKml(kmls.has(sanitizedFolder));
-        });
-      }
+      if (isMounted) loadData(); 
     }, 50);
     return () => { isMounted = false; clearTimeout(timeout); };
-  }, [loadData, projectId, sanitizedFolder]);
+  }, [loadData, projectId]);
 
   const handleBackNavigation = () => router.back();
 
   const handleDirectSaveToDevice = async () => {
     if (isExportingRef.current) return;
-    const userId = await getUserId();
-    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+    const userId = await getActiveUserId();
+    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${activeFolder}/`;
     
     const dirInfo = await FileSystem.getInfoAsync(sourcePath);
     if (!dirInfo.exists) return Alert.alert("No Data", "No project data exists to save yet.");
     
     try {
-      const permissions = await StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (!permissions.granted) return;
+      let targetDirUri = await SecureStore.getItemAsync('irma_saf_directory_uri');
+      
+      if (!targetDirUri) {
+          const permissions = await StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (!permissions.granted) return;
+          targetDirUri = permissions.directoryUri;
+          await SecureStore.setItemAsync('irma_saf_directory_uri', targetDirUri);
+      }
+      try { await StorageAccessFramework.readDirectoryAsync(targetDirUri); }
+      catch(e) {
+          const permissions = await StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (!permissions.granted) return;
+          targetDirUri = permissions.directoryUri;
+          await SecureStore.setItemAsync('irma_saf_directory_uri', targetDirUri);
+      }
 
       isExportingRef.current = true;
       setExportState({ active: true, status: 'Copying to device...', isCancellable: false });
       
       const timestamp = new Date().toISOString().replace(/[:.-]/g, '_');
-      const exportDirName = `IRMA_Export_${projectId}_${timestamp}`;
-      const dirUri = await StorageAccessFramework.makeDirectoryAsync(permissions.directoryUri, exportDirName);
+      const exportDirUri = await StorageAccessFramework.makeDirectoryAsync(targetDirUri, `IRMA_Project_${activeFolder}_${timestamp}`);
       
-      const targetZipPath = `${FileSystem.cacheDirectory}${sanitizedFolder}_export.zip`;
-      await zip(sourcePath.replace('file://', ''), targetZipPath.replace('file://', ''));
-      
-      const zipBase64 = await FileSystem.readAsStringAsync(targetZipPath, { encoding: FileSystem.EncodingType.Base64 });
-      const fileUri = await StorageAccessFramework.createFileAsync(dirUri, `${sanitizedFolder}.zip`, 'application/zip');
-      await FileSystem.writeAsStringAsync(fileUri, zipBase64, { encoding: FileSystem.EncodingType.Base64 });
-      
+      const traverseAndCopy = async (localPath: string, safParentUri: string) => {
+          const files = await FileSystem.readDirectoryAsync(localPath);
+          for (const file of files) {
+              const fullLocalPath = `${localPath}${file}`;
+              const info = await FileSystem.getInfoAsync(fullLocalPath);
+              if (info.isDirectory) {
+                  const newSafDirUri = await StorageAccessFramework.makeDirectoryAsync(safParentUri, file);
+                  await traverseAndCopy(`${fullLocalPath}/`, newSafDirUri);
+              } else {
+                  const content = await FileSystem.readAsStringAsync(fullLocalPath, { encoding: FileSystem.EncodingType.Base64 });
+                  let mimeType = 'application/octet-stream';
+                  const ext = file.split('.').pop()?.toLowerCase();
+                  if(ext==='jpg'||ext==='jpeg') mimeType='image/jpeg';
+                  else if(ext==='png') mimeType='image/png';
+                  else if(ext==='mp4') mimeType='video/mp4';
+                  else if(ext==='json') mimeType='application/json';
+                  else if(ext==='txt') mimeType='text/plain';
+                  else if(ext==='kml') mimeType='application/vnd.google-earth.kml+xml';
+                  
+                  const safFileUri = await StorageAccessFramework.createFileAsync(safParentUri, file, mimeType);
+                  await FileSystem.writeAsStringAsync(safFileUri, content, { encoding: FileSystem.EncodingType.Base64 });
+              }
+          }
+      };
+
+      await traverseAndCopy(sourcePath, exportDirUri);
       Alert.alert("Success", "Project saved securely to your device folder.");
     } catch (e) {
        Alert.alert("Error", "Failed to save to device.");
@@ -210,10 +299,49 @@ export default function ProjectDetails() {
     }
   };
 
+  const handleOpenProjectKml = async () => {
+    const userId = await getActiveUserId();
+    const exactPath = `${FileSystem.documentDirectory}projects/${userId}/${activeFolder}/`;
+    try {
+      let latestKmlUri = ''; let latestTime = 0;
+      const findLatestKml = async (currentPath: string) => {
+        try {
+          const info = await FileSystem.getInfoAsync(currentPath);
+          if (!info.exists || !info.isDirectory) return;
+          const files = await FileSystem.readDirectoryAsync(currentPath);
+          for (const file of files) {
+            const fullPath = `${currentPath}${file}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            if (fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); }
+            else if (file.toLowerCase().endsWith('.kml')) {
+              if (fileInfo.modificationTime && fileInfo.modificationTime >= latestTime) {
+                latestTime = fileInfo.modificationTime; latestKmlUri = fullPath;
+              }
+            }
+          }
+        } catch(e) {}
+      };
+      
+      await findLatestKml(exactPath);
+
+      if (latestKmlUri) {
+         const content = await FileSystem.readAsStringAsync(latestKmlUri);
+         // Extremely robust regex bypassing all visual spaces/newlines injected by mapping software
+         const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
+         if (coordMatch) {
+             Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
+             return;
+         }
+         Alert.alert("Error", "Could not parse location data from the KML file.");
+      }
+      else Alert.alert("Not Found", "No KML file found for this project.");
+    } catch (e) { Alert.alert("Error", "Could not open KML file."); }
+  };
+
   const handleShareOptions = async () => {
     if (isExportingRef.current) return;
-    const userId = await getUserId();
-    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${sanitizedFolder}/`;
+    const userId = await getActiveUserId();
+    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${activeFolder}/`;
     
     const dirInfo = await FileSystem.getInfoAsync(sourcePath);
     if (!dirInfo.exists) return Alert.alert("No Data", "No files exist to share.");
@@ -230,15 +358,9 @@ export default function ProjectDetails() {
       isExportingRef.current = true;
       setExportState({ active: true, status: 'Preparing Cloud Sync...', isCancellable: false });
 
-      let uName = 'AnonymousUser';
-      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-      if (sessionStr) {
-        const parsedSession = JSON.parse(sessionStr);
-        const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-        if (userSnap.exists() && userSnap.data().username) uName = userSnap.data().username;
-      }
+      const uName = await getActiveUsername();
 
-      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(sanitizedFolder, sourcePath, uName, { totalFiles: 1, totalSize: 1, maxModTime: Date.now() }, (status) => {
+      const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(activeFolder, sourcePath, uName, { totalFiles: 1, totalSize: 1, maxModTime: Date.now() }, (status) => {
          setExportState(prev => ({ ...prev, status }));
       });
       
@@ -258,7 +380,7 @@ export default function ProjectDetails() {
     try {
       isExportingRef.current = true;
       setExportState({ active: true, status: 'Compressing directory...', isCancellable: true });
-      const targetZipPath = `${FileSystem.cacheDirectory}${sanitizedFolder}.zip`;
+      const targetZipPath = `${FileSystem.cacheDirectory}${activeFolder}.zip`;
       
       await zip(sourcePath.replace('file://', ''), targetZipPath.replace('file://', ''));
       setExportState({ active: false, status: '', isCancellable: false });
@@ -275,15 +397,21 @@ export default function ProjectDetails() {
     Alert.alert("Copied", `${label} details copied to clipboard.`);
   };
 
-  const handleAddToPlanner = () => {
-    store.addPlannerItem({
-      id: `${project?.project_id || projectId}_${project?.tender_id || tenderId}`,
-      projectId: project?.project_id || projectId,
-      tenderId: project?.tender_id || tenderId,
-      title: project?.project_title || 'Untitled',
-      ulb: project?.ulb || 'Unknown'
-    });
-    Alert.alert("Added to Planner", `Project added to Visits Pending list.`);
+  const handleAddToPlanner = async () => {
+    const uid = await getActiveUserId();
+    const path = `${FileSystem.documentDirectory}projects/${uid}/planner_cache.json`;
+    let items = [...plannerItems];
+    const strictId = `${project?.project_id || projectId}_${project?.tender_id || tenderId}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    
+    if (!items.some(i => i.projectId === (project?.project_id || projectId))) {
+        items.push({ id: strictId, projectId: project?.project_id || projectId, tenderId: project?.tender_id || tenderId, title: project?.project_title || 'Untitled', ulb: project?.ulb || 'Unknown' });
+        setPlannerItems(items);
+        await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}projects/${uid}/`, {intermediates: true}).catch(()=>{});
+        await FileSystem.writeAsStringAsync(path, JSON.stringify(items));
+        Alert.alert("Added to Planner", `Project added to Visits Pending list.`);
+    } else {
+        Alert.alert("Already Planned", "This project is already in your planner.");
+    }
   };
 
   if (loading) return <View style={globalStyles.centerContainer}><ActivityIndicator size="large" color="#2563EB" /><Text style={{ marginTop: 10, color: '#64748B' }}>Fetching Project Details...</Text></View>;
@@ -297,14 +425,12 @@ export default function ProjectDetails() {
     </View>
   );
 
-  // [FIX: Properly scope these variables before they are called in JSX]
   const displayedPrevObs = showAllObs ? prevObs : prevObs.slice(0, 5);
-  const isAlreadyPlanned = store.plannerItems.some(i => i.id === `${project.project_id}_${project.tender_id}`);
-  const hasVisited = latestObs.length > 0 || prevObs.length > 0 || hasEdited || hasKml;
+  const isAlreadyPlanned = plannerItems.some(i => i.projectId === project.project_id);
+  const hasVisited = lastVisited !== 'Not visited yet' || latestObs.length > 0 || prevObs.length > 0 || hasEdited || hasKml;
 
   return (
     <View style={globalStyles.container}>
-      {/* Header with fixed isAlreadyPlanned reference */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBackNavigation} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#1E293B" /></TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
@@ -373,17 +499,17 @@ export default function ProjectDetails() {
               <View style={[globalStyles.btnRow, { marginBottom: 15 }]}>
                 <View style={{ flex: 1, marginRight: 5 }}>
                   {project.latitude && project.longitude && (
-                    <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(project.latitude, project.longitude)}>
+                    <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => Linking.openURL(`https://maps.google.com/?q=${project.latitude},${project.longitude}`)}>
                       <Ionicons name="navigate-circle-outline" size={20} color="white" />
-                      <Text style={globalStyles.locateBtnText}>Map Direct</Text>
+                      <Text style={globalStyles.locateBtnText}>Map Pin</Text>
                     </TouchableOpacity>
                   )}
                 </View>
                 <View style={{ flex: 1, marginLeft: 5 }}>
                   {hasKml && (
-                    <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(projectId, tenderId)}>
+                    <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={handleOpenProjectKml}>
                       <Ionicons name="earth" size={20} color="white" />
-                      <Text style={globalStyles.locateBtnText}>View KML</Text>
+                      <Text style={globalStyles.locateBtnText}>KML Pin</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -408,7 +534,7 @@ export default function ProjectDetails() {
 
         {activeTab === 'visits' && (
           <View>
-            <VisitManager projectId={projectId} tenderId={tenderId} folderName={sanitizedFolder} onEdit={() => setHasEdited(true)} />
+            <VisitManager projectId={projectId} tenderId={tenderId} folderName={activeFolder} onEdit={() => setHasEdited(true)} />
             <Text style={[styles.sectionHeader, { textAlign: 'center', marginTop: 10 }]}>IRMA Observations</Text>
             {latestObs.length === 0 && prevObs.length === 0 ? (
               <View style={globalStyles.card}><Text style={{color: '#64748B', textAlign: 'center', fontStyle: 'italic'}}>No IRMA review records exist.</Text></View>

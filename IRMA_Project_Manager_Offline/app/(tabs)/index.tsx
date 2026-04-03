@@ -4,10 +4,12 @@ import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as SecureStore from 'expo-secure-store'; // Added to fetch unique User ID
+import * as SecureStore from 'expo-secure-store';
+import { doc, getDoc } from 'firebase/firestore';
+import * as Linking from 'expo-linking';
 
+import { db as firestoreDb } from '../../utils/firebaseConfig';
 import { globalStyles } from '../../styles/globalStyles';
-import { openGoogleMaps, shareLocalKml, getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 import { useUserStore } from '../../store/userStore';
 
 interface Tender {
@@ -23,7 +25,6 @@ interface Tender {
   longitude?: string;
 }
 
-// Map sort keys to shorter UI display names
 const getShortSortName = (val: string) => {
   const map: Record<string, string> = {
     'title': 'Title',
@@ -34,9 +35,66 @@ const getShortSortName = (val: string) => {
   return map[val] || 'Sort By';
 };
 
-const TenderCard = React.memo(({ item, onPress, hasKml, isVisited }: { item: Tender, onPress: () => void, hasKml: boolean, isVisited: boolean }) => (
-  // Visited projects now have a light green translucent styling
-  <TouchableOpacity style={[globalStyles.card, isVisited && styles.visitedCard]} activeOpacity={0.7} onPress={onPress}>
+const getActiveUserId = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uId = parsedSession.uniqueUserId || parsedSession.userId;
+      try {
+        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().uniqueUserId) {
+            uId = userSnap.data().uniqueUserId;
+            if (parsedSession.uniqueUserId !== uId) {
+                parsedSession.uniqueUserId = uId;
+                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
+            }
+        }
+      } catch (e) { console.warn(e); }
+      return uId || 'AnonymousUser';
+    }
+  } catch(e) { console.warn(e); }
+  return 'AnonymousUser';
+};
+
+const scanForKmls = async (userId: string) => {
+  const kmlSet = new Set<string>();
+  const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
+  try {
+    const info = await FileSystem.getInfoAsync(baseDir);
+    if (!info.exists) return kmlSet;
+    const folders = await FileSystem.readDirectoryAsync(baseDir);
+    for (const folder of folders) {
+      if (folder === 'SQLite' || folder.endsWith('.json')) continue;
+      let hasKml = false;
+      const checkDir = async (dirPath: string) => {
+        if (hasKml) return;
+        try {
+            const dInfo = await FileSystem.getInfoAsync(dirPath);
+            if (!dInfo.exists || !dInfo.isDirectory) return;
+            const items = await FileSystem.readDirectoryAsync(dirPath);
+            for (const item of items) {
+                if (hasKml) return;
+                if (item.toLowerCase().endsWith('.kml')) { hasKml = true; return; }
+                const subPath = `${dirPath}${item}`;
+                const subInfo = await FileSystem.getInfoAsync(subPath);
+                if (subInfo.isDirectory) await checkDir(`${subPath}/`);
+            }
+        } catch(e) {}
+      };
+      await checkDir(`${baseDir}${folder}/`);
+      if (hasKml) kmlSet.add(folder);
+    }
+  } catch(e) {}
+  return kmlSet;
+};
+
+const getFolderName = (pId: string, tId: string) => {
+  return `${pId}_${tId || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+};
+
+const TenderCard = React.memo(({ item, onPress, hasKml, isVisited, isPlanned, onOpenKml }: { item: Tender, onPress: (pId: string, tId: string) => void, hasKml: boolean, isVisited: boolean, isPlanned: boolean, onOpenKml: (pId: string, tId: string) => void }) => (
+  <TouchableOpacity style={[globalStyles.card, isVisited ? styles.visitedCard : (isPlanned ? styles.plannedCard : null)]} activeOpacity={0.7} onPress={() => onPress(item.project_id, item.tender_id)}>
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
       <Text style={styles.cardId}>{item.project_id}</Text>
       <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
@@ -56,17 +114,17 @@ const TenderCard = React.memo(({ item, onPress, hasKml, isVisited }: { item: Ten
     <View style={globalStyles.btnRow}>
       <View style={{ flex: 1, marginRight: 5 }}>
         {item.latitude && item.longitude && (
-          <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => openGoogleMaps(item.latitude!, item.longitude!)}>
+          <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => Linking.openURL(`https://maps.google.com/?q=${item.latitude},${item.longitude}`)}>
             <Ionicons name="navigate-circle-outline" size={20} color="white" />
-            <Text style={globalStyles.locateBtnText}>Map Direct</Text>
+            <Text style={globalStyles.locateBtnText}>Map Pin</Text>
           </TouchableOpacity>
         )}
       </View>
       <View style={{ flex: 1, marginLeft: 5 }}>
         {hasKml && (
-          <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => shareLocalKml(item.project_id, item.tender_id)}>
+          <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => onOpenKml(item.project_id, item.tender_id)}>
             <Ionicons name="earth" size={20} color="white" />
-            <Text style={globalStyles.locateBtnText}>View KML</Text>
+            <Text style={globalStyles.locateBtnText}>KML Pin</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -83,6 +141,7 @@ export default function ProjectsTab() {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
   const [visitedProjects, setVisitedProjects] = useState<Set<string>>(new Set());
+  const [plannerItems, setPlannerItems] = useState<any[]>([]); 
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
@@ -101,14 +160,6 @@ export default function ProjectsTab() {
   const flatListRef = useRef<FlatList>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
 
-  const getUserId = async () => {
-    try {
-      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-      if (sessionStr) return JSON.parse(sessionStr).userId || 'AnonymousUser';
-    } catch(e) {}
-    return 'AnonymousUser';
-  };
-
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -121,19 +172,26 @@ export default function ProjectsTab() {
   );
 
   const checkLocalWorkspace = async (isMounted: boolean) => {
-    const userId = await getUserId();
-    const kmls = await getProjectsWithLocalKmls(); // Assumes locationHelpers is also updated to use UserID
+    const userId = await getActiveUserId();
+    const kmls = await scanForKmls(userId); 
     const visited = new Set<string>();
+    let loadedPlanner = [];
     try {
-      // User-Isolated Directory Scanning
       const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
       const folders = await FileSystem.readDirectoryAsync(baseDir).catch(()=>[]);
-      for (const f of folders) visited.add(f);
+      for (const f of folders) {
+          if (f !== 'SQLite' && !f.endsWith('.json')) visited.add(f);
+      }
+      
+      const path = `${baseDir}planner_cache.json`;
+      const info = await FileSystem.getInfoAsync(path);
+      if(info.exists) loadedPlanner = JSON.parse(await FileSystem.readAsStringAsync(path));
     } catch(e) {}
     
     if (isMounted) {
       setKmlProjects(kmls);
       setVisitedProjects(visited);
+      setPlannerItems(loadedPlanner);
     }
   };
 
@@ -153,11 +211,48 @@ export default function ProjectsTab() {
     }
   };
 
-  const getFolderName = (pId: string, tId: string) => {
-    const safeId = String(pId).replace(/[\/\\]/g, '-');
-    const safeTender = String(tId || 'NoTender').replace(/[\/\\]/g, '-');
-    return `${safeId}_${safeTender}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-  };
+  const handleOpenLocalKml = useCallback(async (pId: string, tId: string) => {
+    const userId = await getActiveUserId();
+    const folderName = getFolderName(pId, tId);
+    const sourcePath = `${FileSystem.documentDirectory}projects/${userId}/${folderName}/`;
+    try {
+      let latestKmlUri = ''; let latestTime = 0;
+      const findLatestKml = async (currentPath: string) => {
+        try {
+          const info = await FileSystem.getInfoAsync(currentPath);
+          if (!info.exists || !info.isDirectory) return;
+          const files = await FileSystem.readDirectoryAsync(currentPath);
+          for (const file of files) {
+            const fullPath = `${currentPath}${file}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            if (fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); }
+            else if (file.toLowerCase().endsWith('.kml')) {
+              if (fileInfo.modificationTime && fileInfo.modificationTime >= latestTime) {
+                latestTime = fileInfo.modificationTime; latestKmlUri = fullPath;
+              }
+            }
+          }
+        } catch(e) {}
+      };
+      
+      await findLatestKml(sourcePath);
+
+      if (latestKmlUri) {
+         const content = await FileSystem.readAsStringAsync(latestKmlUri);
+         const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
+         if (coordMatch) {
+             Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
+             return;
+         }
+         Alert.alert("Error", "Could not parse location data from the KML file.");
+      }
+      else Alert.alert("Not Found", "No KML file found for this project.");
+    } catch (e) { Alert.alert("Error", "Could not open KML file."); }
+  }, []);
+
+  const handlePressTender = useCallback((projectId: string, tenderId: string) => {
+    router.push(`/project/${encodeURIComponent(projectId)}?tender_id=${encodeURIComponent(tenderId || 'UNKNOWN')}` as any);
+  }, [router]);
 
   const uniqueStates = ['All States', ...[...new Set(tenders.map(t => t.state).filter(Boolean))].sort()];
   const uniqueDistricts = ['All Districts', ...[...new Set(tenders.filter(t => !state || t.state === state).map(t => t.district).filter(Boolean))].sort()];
@@ -243,19 +338,19 @@ export default function ProjectsTab() {
   const renderItem = useCallback(({ item }: { item: Tender }) => {
     const fName = getFolderName(item.project_id, item.tender_id);
     const isVisited = visitedProjects.has(fName);
+    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id);
 
     return (
       <TenderCard 
         item={item} 
         hasKml={kmlProjects.has(fName)}
         isVisited={isVisited}
-        onPress={() => {
-          // Removed the blocking alert here. Users can now access the details page normally.
-          router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
-        }} 
+        isPlanned={isPlanned}
+        onOpenKml={handleOpenLocalKml}
+        onPress={handlePressTender} 
       />
     );
-  }, [router, kmlProjects, visitedProjects]);
+  }, [kmlProjects, visitedProjects, plannerItems, handleOpenLocalKml, handlePressTender]);
 
   if (loading) {
     return (
@@ -416,6 +511,7 @@ const styles = StyleSheet.create({
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
   
   visitedCard: { backgroundColor: 'rgba(220, 252, 231, 0.7)', borderColor: '#86EFAC', borderWidth: 1 },
+  plannedCard: { backgroundColor: 'rgba(254, 249, 195, 0.7)', borderColor: '#FDE047', borderWidth: 1 },
   
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
   progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },

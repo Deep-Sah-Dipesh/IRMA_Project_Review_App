@@ -3,6 +3,7 @@ import { View, Text, SectionList, FlatList, StyleSheet, TouchableOpacity, Activi
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Linking from 'expo-linking';
 import { zip } from 'react-native-zip-archive';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -10,8 +11,6 @@ import * as SecureStore from 'expo-secure-store';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
-import { globalStyles } from '../../styles/globalStyles';
-import { getProjectsWithLocalKmls } from '../../utils/locationHelpers';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -27,6 +26,44 @@ const getShortSortName = (val: string) => {
 
 type SortOption = 'Date-Time' | 'Project Title' | 'Project ID' | 'Tender ID' | 'Number of Files';
 
+const getActiveUserId = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uId = parsedSession.uniqueUserId || parsedSession.userId;
+      try {
+        const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().uniqueUserId) {
+            uId = userSnap.data().uniqueUserId;
+            if (parsedSession.uniqueUserId !== uId) {
+                parsedSession.uniqueUserId = uId;
+                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
+            }
+        }
+      } catch (e) { console.warn(e); }
+      return uId || 'AnonymousUser';
+    }
+  } catch(e) {}
+  return 'AnonymousUser';
+};
+
+const getActiveUsername = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uName = parsedSession.username || parsedSession.uniqueUserId || parsedSession.userId || 'AnonymousUser';
+      try {
+        const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().username) uName = userSnap.data().username;
+      } catch (e) { }
+      return uName;
+    }
+  } catch(e) {}
+  return 'AnonymousUser';
+};
+
 export default function DashboardTab() {
   const router = useRouter();
   const sqlDb = SQLite.useSQLiteContext();
@@ -36,7 +73,6 @@ export default function DashboardTab() {
   const [activeUserId, setActiveUserId] = useState('');
   
   const [recentProjects, setRecentProjects] = useState<any[]>([]);
-  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
   
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
@@ -52,7 +88,6 @@ export default function DashboardTab() {
 
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
 
-  // Recovery Mode states reset when the component unmounts/app restarts
   const [tapCount, setTapCount] = useState(0);
   const [showPinModal, setShowPinModal] = useState(false);
   const [recoveryPin, setRecoveryPin] = useState('');
@@ -71,16 +106,7 @@ export default function DashboardTab() {
   const initLoad = async (isMounted: boolean, recovery: boolean) => {
     setLoading(true);
     try {
-      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-      if (!sessionStr) throw new Error("No session");
-      const parsedSession = JSON.parse(sessionStr);
-      let uniqueId = parsedSession.userId; 
-      
-      try {
-        const userSnap = await getDoc(doc(db, 'users', parsedSession.userId));
-        if (userSnap.exists() && userSnap.data().uniqueUserId) uniqueId = userSnap.data().uniqueUserId;
-      } catch (e) { console.warn("Firestore fetch failed, using cached ID"); }
-      
+      const uniqueId = await getActiveUserId();
       if (isMounted) setActiveUserId(uniqueId);
       await loadRecentProjects(isMounted, uniqueId, recovery);
     } catch (e) {
@@ -141,17 +167,13 @@ export default function DashboardTab() {
 
   const loadRecentProjects = async (isMounted: boolean, uniqueId: string, recovery: boolean) => {
     try {
-      const kmls = await getProjectsWithLocalKmls().catch(() => new Set());
-      if (isMounted) setKmlProjects(kmls);
-
       let allTenders: any[] = [];
       try { allTenders = await sqlDb.getAllAsync("SELECT * FROM tenders") as any[]; } catch (dbError) {}
 
       const rootUri = FileSystem.documentDirectory;
       if (!rootUri) return;
 
-      const foundFolders: string[] = [];
-      const folderPaths: Record<string, string> = {};
+      const foundProjectsList: {name: string, exactPath: string, ownerId: string}[] = [];
       const combinedProjects = [];
       const cacheFile = `${rootUri}projects/${uniqueId}_meta_cache.json`;
 
@@ -159,37 +181,36 @@ export default function DashboardTab() {
       const userSpecificDir = `${baseProjectsDir}${uniqueId}/`;
 
       if (recovery) {
-         // RECOVERY MODE: Scans root projects directory, IRMA_Projects, and all inner user subdirectories
-         const scanTargets = [baseProjectsDir, `${rootUri}IRMA_Projects/`];
-         const baseExists = await FileSystem.getInfoAsync(baseProjectsDir).catch(() => ({ exists: false }));
-         
-         if (baseExists.exists) {
-             const subDirs = await FileSystem.readDirectoryAsync(baseProjectsDir).catch(() => []);
-             for (const sub of subDirs) {
-                 const subPath = `${baseProjectsDir}${sub}/`;
-                 const subInfo = await FileSystem.getInfoAsync(subPath).catch(() => ({ isDirectory: false }));
-                 if (subInfo.isDirectory && sub !== 'SQLite') scanTargets.push(subPath);
-             }
-         }
-
-         for (const target of scanTargets) {
-             const exists = await FileSystem.getInfoAsync(target).catch(() => ({ exists: false }));
-             if (exists.exists) {
-                 const items = await FileSystem.readDirectoryAsync(target).catch(() => []);
-                 for (const item of items) {
-                     const itemPath = `${target}${item}/`;
-                     const info = await FileSystem.getInfoAsync(itemPath).catch(() => ({ isDirectory: false }));
-                     if (info.isDirectory && !item.startsWith('.') && item.includes('_')) {
-                         if (!foundFolders.includes(item)) {
-                             foundFolders.push(item);
-                             folderPaths[item] = itemPath;
+         const rootInfo = await FileSystem.getInfoAsync(baseProjectsDir).catch(() => ({ exists: false }));
+         if (rootInfo.exists) {
+             const usersOrProjects = await FileSystem.readDirectoryAsync(baseProjectsDir).catch(() => []);
+             for (const item of usersOrProjects) {
+                 if (item === 'SQLite' || item.endsWith('.json')) continue;
+                 const itemPath = `${baseProjectsDir}${item}/`;
+                 const itemInfo = await FileSystem.getInfoAsync(itemPath).catch(() => ({ isDirectory: false }));
+                 
+                 if (itemInfo.isDirectory) {
+                     const subItems = await FileSystem.readDirectoryAsync(itemPath).catch(() => []);
+                     
+                     // Highly robust check against DB schema to differentiate legacy project folders from user sandbox names
+                     const isLegacyProject = allTenders.some(t => {
+                         const expectedFolder = `${t.project_id}_${t.tender_id || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+                         return expectedFolder === item || item.includes(t.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
+                     });
+                     
+                     if (isLegacyProject || subItems.some(s => s.startsWith('VISIT_') || s === 'Location Pins' || s === 'Notes')) {
+                         foundProjectsList.push({ name: item, exactPath: itemPath, ownerId: 'local-user' });
+                     } else {
+                         for (const sub of subItems) {
+                             if (!sub.startsWith('.')) {
+                                 foundProjectsList.push({ name: sub, exactPath: `${itemPath}${sub}/`, ownerId: item });
+                             }
                          }
                      }
                  }
              }
          }
       } else {
-         // NORMAL MODE: Strict sandboxing logic - ONLY reads from user's subdirectory
          const exists = await FileSystem.getInfoAsync(userSpecificDir).catch(() => ({ exists: false }));
          if (exists.exists) {
              const items = await FileSystem.readDirectoryAsync(userSpecificDir).catch(() => []);
@@ -197,32 +218,31 @@ export default function DashboardTab() {
                  const itemPath = `${userSpecificDir}${item}/`;
                  const info = await FileSystem.getInfoAsync(itemPath).catch(() => ({ isDirectory: false }));
                  if (info.isDirectory && !item.startsWith('.')) {
-                     if (!foundFolders.includes(item)) {
-                         foundFolders.push(item);
-                         folderPaths[item] = itemPath;
-                     }
+                     foundProjectsList.push({ name: item, exactPath: itemPath, ownerId: uniqueId });
                  }
              }
          }
       }
 
-      for (const folderName of foundFolders) {
-         const exactPath = folderPaths[folderName];
+      for (const proj of foundProjectsList) {
+         const exactPath = proj.exactPath;
+         const folderName = proj.name;
+         const ownerId = proj.ownerId;
          const meta = await getFolderDatesAndSizeDynamic(exactPath);
          
          if (meta.totalFiles === 0 && meta.totalSize === 0) continue; 
 
          const matchedTender = allTenders.find(t => {
-             const expectedFolder = `${t.project_id}_${t.tender_id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-             return expectedFolder === folderName || folderName.includes(t.project_id);
+             const expectedFolder = `${t.project_id}_${t.tender_id || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+             return expectedFolder === folderName || folderName.includes(t.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
          });
 
-         // Only push accurately verified projects (Removes the Unverified Projects section entirely)
          if (matchedTender) {
              combinedProjects.push({ 
                 ...matchedTender, 
                 folderName: folderName,
                 exactPath: exactPath,
+                ownerId: ownerId,
                 visitDates: meta.uniqueDates.length > 0 ? meta.uniqueDates : ['Unknown'],
                 latestDate: meta.uniqueDates[0] || 'Unknown',
                 totalSize: meta.totalSize,
@@ -236,7 +256,6 @@ export default function DashboardTab() {
       if (combinedProjects.length > 0) {
         await FileSystem.writeAsStringAsync(cacheFile, JSON.stringify(combinedProjects));
       } else {
-        // Prevents loading cache if the user directory is authentically empty
         const dirExists = await FileSystem.getInfoAsync(userSpecificDir).catch(() => ({ exists: false }));
         if (dirExists.exists) {
             const cacheInfo = await FileSystem.getInfoAsync(cacheFile).catch(() => ({ exists: false }));
@@ -349,31 +368,31 @@ export default function DashboardTab() {
   }, [recentProjects, search, sortBy, sortOrder, expandedDates]);
 
   const totalSelectedBytes = useMemo(() => {
-    return recentProjects.filter(p => selectedIds.has(p.folderName)).reduce((acc, curr) => acc + curr.totalSize, 0);
+    return recentProjects.filter(p => selectedIds.has(p.exactPath)).reduce((acc, curr) => acc + curr.totalSize, 0);
   }, [selectedIds, recentProjects]);
 
-  const toggleSelection = (folderName: string) => {
+  const toggleSelection = (exactPath: string) => {
     const newSet = new Set(selectedIds);
-    if (newSet.has(folderName)) newSet.delete(folderName); else newSet.add(folderName);
+    if (newSet.has(exactPath)) newSet.delete(exactPath); else newSet.add(exactPath);
     setSelectedIds(newSet);
   };
 
   const toggleDateSelection = (section: any) => {
     const newSet = new Set(selectedIds);
-    const allSelected = section.originalData.every((p: any) => selectedIds.has(p.folderName));
+    const allSelected = section.originalData.every((p: any) => selectedIds.has(p.exactPath));
     
-    if (allSelected) section.originalData.forEach((p: any) => newSet.delete(p.folderName));
-    else section.originalData.forEach((p: any) => newSet.add(p.folderName));
+    if (allSelected) section.originalData.forEach((p: any) => newSet.delete(p.exactPath));
+    else section.originalData.forEach((p: any) => newSet.add(p.exactPath));
     setSelectedIds(newSet);
   };
 
   const handleBulkDelete = () => {
-    Alert.alert("Erase Media Files?", "This will permanently delete photos, videos, and notes, but will retain location pins (KML) and metadata.", [
+    Alert.alert("Erase Media Files?", "This will permanently delete photos and videos, but will safely retain text notes, audio, location pins, documents, and metadata.", [
       { text: "Cancel", style: "cancel" },
       { text: "Erase Media", style: "destructive", onPress: async () => {
           setIsProcessingAction(true);
           try {
-            const selectedData = recentProjects.filter(p => selectedIds.has(p.folderName));
+            const selectedData = recentProjects.filter(p => selectedIds.has(p.exactPath));
             for (const project of selectedData) {
                const traverseAndDeleteMedia = async (currentPath: string) => {
                   const files = await FileSystem.readDirectoryAsync(currentPath);
@@ -383,7 +402,9 @@ export default function DashboardTab() {
                      if (info.isDirectory) { await traverseAndDeleteMedia(`${fullPath}/`); } 
                      else {
                         const lowerFile = file.toLowerCase();
-                        if (!lowerFile.endsWith('.json') && !lowerFile.endsWith('.kml')) { await FileSystem.deleteAsync(fullPath, { idempotent: true }); }
+                        if (lowerFile.endsWith('.jpg') || lowerFile.endsWith('.jpeg') || lowerFile.endsWith('.png') || lowerFile.endsWith('.mp4') || lowerFile.endsWith('.mov')) { 
+                           await FileSystem.deleteAsync(fullPath, { idempotent: true }); 
+                        }
                      }
                   }
                };
@@ -397,7 +418,7 @@ export default function DashboardTab() {
   };
 
   const handleBulkShare = async () => {
-    const selectedData = recentProjects.filter(p => selectedIds.has(p.folderName));
+    const selectedData = recentProjects.filter(p => selectedIds.has(p.exactPath));
     const totalBytes = selectedData.reduce((acc, curr) => acc + curr.totalSize, 0);
     const totalFiles = selectedData.reduce((acc, curr) => acc + curr.totalFiles, 0);
     
@@ -426,14 +447,15 @@ export default function DashboardTab() {
     try {
       await FileSystem.makeDirectoryAsync(stagingPath, { intermediates: true });
       for (const project of selectedData) {
-        await FileSystem.copyAsync({ from: project.exactPath, to: `${stagingPath}${project.folderName}/` });
+        const destName = isRecoveryMode ? `${project.ownerId}_${project.folderName}` : project.folderName;
+        await FileSystem.copyAsync({ from: project.exactPath, to: `${stagingPath}${destName}/` });
       }
 
       if (type === 'link') {
         const currentMeta = { totalFiles, totalSize, maxModTime: Date.now() };
-        let uName = activeUserId || 'AnonymousUser';
+        let uName = await getActiveUsername();
 
-        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, uName, currentMeta, (status) => {
+        const { expectedUrl, startBackgroundUpload } = await generateCloudLinkAndUpload(exportName, stagingPath, uName, currentMeta, (status: string) => {
            setBulkExportStatus(status);
         });
         
@@ -482,7 +504,6 @@ export default function DashboardTab() {
 
       setBulkExportStatus('Copying projects...');
       
-      // Verification check in case the user revoked the scoped folder permission via OS settings
       try {
           await FileSystem.StorageAccessFramework.readDirectoryAsync(targetDirUri);
       } catch(e) {
@@ -492,15 +513,14 @@ export default function DashboardTab() {
           await SecureStore.setItemAsync('irma_saf_directory_uri', targetDirUri);
       }
 
-      const selectedData = recentProjects.filter(p => selectedIds.has(p.folderName));
-
-      // Automated timestamped folder generation avoids identical naming conflicts
+      const selectedData = recentProjects.filter(p => selectedIds.has(p.exactPath));
       const dateStr = new Date().toISOString().replace(/[:\-T]/g, '').slice(0, 14);
       const exportDirUri = await FileSystem.StorageAccessFramework.makeDirectoryAsync(targetDirUri, `IRMA_Export_${dateStr}`);
 
       for (const project of selectedData) {
          try {
-             const projDirUri = await FileSystem.StorageAccessFramework.makeDirectoryAsync(exportDirUri, project.folderName);
+             const destName = isRecoveryMode ? `${project.ownerId}_${project.folderName}` : project.folderName;
+             const projDirUri = await FileSystem.StorageAccessFramework.makeDirectoryAsync(exportDirUri, destName);
              
              const traverseAndCopy = async (localPath: string, safParentUri: string) => {
                  const files = await FileSystem.readDirectoryAsync(localPath);
@@ -547,22 +567,38 @@ export default function DashboardTab() {
     try {
       let latestKmlUri = ''; let latestTime = 0;
       const findLatestKml = async (currentPath: string) => {
-        const files = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
-        for (const file of files) {
-          const fullPath = `${currentPath}${file}`;
-          const info = await FileSystem.getInfoAsync(fullPath);
-          if (info.isDirectory) { await findLatestKml(`${fullPath}/`); } 
-          else if (file.toLowerCase().endsWith('.kml')) {
-            if (info.modificationTime && info.modificationTime > latestTime) {
-              latestTime = info.modificationTime; latestKmlUri = fullPath;
+        try {
+          const info = await FileSystem.getInfoAsync(currentPath);
+          if (!info.exists || !info.isDirectory) return;
+          const files = await FileSystem.readDirectoryAsync(currentPath);
+          for (const file of files) {
+            const fullPath = `${currentPath}${file}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            if (fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); } 
+            else if (file.toLowerCase().endsWith('.kml')) {
+              if (fileInfo.modificationTime && fileInfo.modificationTime >= latestTime) {
+                latestTime = fileInfo.modificationTime; latestKmlUri = fullPath;
+              }
             }
           }
-        }
+        } catch(e) {}
       };
-      await findLatestKml(exactPath);
-      if (latestKmlUri) await Sharing.shareAsync(latestKmlUri, { dialogTitle: 'Share Project Location (KML)' });
+      
+      await findLatestKml(`${exactPath}Location Pins/`);
+      if (!latestKmlUri) await findLatestKml(exactPath);
+
+      if (latestKmlUri) {
+         const content = await FileSystem.readAsStringAsync(latestKmlUri);
+         // Extremely robust regex bypassing all visual spaces/newlines injected by mapping software
+         const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
+         if (coordMatch) {
+             Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
+             return;
+         }
+         Alert.alert("Error", "Could not parse location data from the KML file.");
+      }
       else Alert.alert("Not Found", "No KML file found for this project.");
-    } catch (e) { Alert.alert("Error", "Could not share KML file."); }
+    } catch (e) { Alert.alert("Error", "Could not open KML file."); }
   };
 
   const renderSectionHeader = ({ section }: { section: any }) => {
@@ -585,7 +621,7 @@ export default function DashboardTab() {
         <View style={styles.dateHeaderContainer}>
           {isSelectionMode && (
             <TouchableOpacity style={{ padding: 10, marginRight: 5 }} onPress={() => toggleDateSelection(section)}>
-              <Ionicons name={section.originalData.every((p:any) => selectedIds.has(p.folderName)) ? "checkbox" : "square-outline"} size={22} color="#2563EB" />
+              <Ionicons name={section.originalData.every((p:any) => selectedIds.has(p.exactPath)) ? "checkbox" : "square-outline"} size={22} color="#2563EB" />
             </TouchableOpacity>
           )}
           <TouchableOpacity style={styles.dateHeader} onPress={() => toggleSection(section.title)} activeOpacity={0.8}>
@@ -607,30 +643,33 @@ export default function DashboardTab() {
   };
 
   const renderItem = ({ item }: { item: any }) => {
-    const isSelected = selectedIds.has(item.folderName);
-    const hasKml = kmlProjects.has(item.folderName) || (item.mediaStats?.kmls > 0);
+    const isSelected = selectedIds.has(item.exactPath);
+    const hasKml = item.mediaStats?.kmls > 0;
     const exactTime = new Date(item.maxModTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     return (
       <TouchableOpacity 
-        style={[globalStyles.card, isSelectionMode && isSelected && styles.cardSelected]} 
+        style={[styles.card, isSelectionMode && isSelected && styles.cardSelected]} 
         activeOpacity={0.7} 
-        onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.folderName); }}
+        onLongPress={() => { setIsSelectionMode(true); toggleSelection(item.exactPath); }}
         onPress={() => {
-          if (isSelectionMode) toggleSelection(item.folderName);
+          if (isSelectionMode) toggleSelection(item.exactPath);
           else router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
         }}
       >
         <View style={styles.cardHeader}>
           {isSelectionMode && <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={22} color={isSelected ? "#2563EB" : "#94A3B8"} style={{marginRight: 10}} />}
-          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
-            <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
-            <Text style={globalStyles.cardTitle}>{item.project_id}</Text>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+               <Ionicons name="folder-open" size={18} color="#2563EB" style={{marginRight: 6}} />
+               <Text style={styles.cardTitle}>{item.project_id}</Text>
+            </View>
+            {isRecoveryMode && <Text style={{fontSize: 10, color: '#EF4444', fontWeight: 'bold', marginTop: 2}}>Owner: {item.ownerId}</Text>}
           </View>
           <Text style={{fontSize: 11, color: '#94A3B8', fontWeight: 'bold'}}>{exactTime}</Text>
         </View>
 
-        <Text style={[globalStyles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>
+        <Text style={[styles.cardTitle, { color: '#334155', marginBottom: 10 }]}>{item.project_title}</Text>
         
         <View style={[styles.dovContainer, { marginBottom: 12 }]}>
           <Ionicons name="calendar" size={12} color="#059669" style={{marginRight: 4}} />
@@ -643,18 +682,18 @@ export default function DashboardTab() {
           <View style={{ flex: 1, paddingRight: 10 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
               <Ionicons name="location-outline" size={14} color="#64748B" />
-              <Text style={globalStyles.textMuted} numberOfLines={1}> {item.ulb}, {item.state}</Text>
+              <Text style={styles.textMuted} numberOfLines={1}> {item.ulb}, {item.state}</Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <Ionicons name="document-text-outline" size={14} color="#64748B" />
-              <Text style={globalStyles.textMuted} numberOfLines={1}> Tender: {item.tender_id || 'N/A'}</Text>
+              <Text style={styles.textMuted} numberOfLines={1}> Tender: {item.tender_id || 'N/A'}</Text>
             </View>
           </View>
 
           {hasKml && (
-             <TouchableOpacity style={[globalStyles.locateGreenBtn, { flex: 0, paddingHorizontal: 12, paddingVertical: 8 }]} onPress={() => handleShareLatestKml(item.exactPath)}>
+             <TouchableOpacity style={[styles.locateGreenBtn, { flex: 0, paddingHorizontal: 12, paddingVertical: 8 }]} onPress={() => handleShareLatestKml(item.exactPath)}>
                <Ionicons name="earth" size={16} color="white" />
-               <Text style={globalStyles.locateBtnText}>Locate</Text>
+               <Text style={styles.locateBtnText}>Locate</Text>
              </TouchableOpacity>
           )}
         </View>
@@ -665,7 +704,7 @@ export default function DashboardTab() {
   if (loading) return <View style={styles.centerLoading}><ActivityIndicator size="large" color="#2563EB" /><Text style={{marginTop: 10, color: '#64748B'}}>Scanning workspace...</Text></View>;
 
   return (
-    <View style={globalStyles.container}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <View style={{ flex: 1, paddingRight: 10 }}>
@@ -675,7 +714,7 @@ export default function DashboardTab() {
                  {isRecoveryMode && <View style={styles.recoveryBadge}><Text style={{color: '#FFF', fontSize: 10, fontWeight: 'bold'}}>RECOVERY</Text></View>}
                </View>
             </TouchableWithoutFeedback>
-            <Text style={styles.subTitle}>Personalised data for {activeUserId}</Text>
+            <Text style={styles.subTitle}>{isRecoveryMode ? 'Accessing data from all users on this device' : `Personalised data for ${activeUserId}`}</Text>
           </View>
           <TouchableOpacity 
              style={[styles.toolbarBtn, isSelectionMode ? { backgroundColor: '#FEE2E2', borderColor: '#FECACA' } : { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
@@ -722,7 +761,7 @@ export default function DashboardTab() {
       <SectionList 
         ref={sectionListRef}
         sections={processedSections}
-        keyExtractor={(item, index) => item.folderName || index.toString()}
+        keyExtractor={(item, index) => item.exactPath || index.toString()}
         renderItem={renderItem}
         renderSectionHeader={renderSectionHeader}
         stickySectionHeadersEnabled={true}
@@ -809,6 +848,12 @@ export default function DashboardTab() {
 }
 
 const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  card: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 12, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F1F5F9' },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 6 },
+  textMuted: { fontSize: 12, color: '#64748B', fontWeight: '500' },
+  locateGreenBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#10B981', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, justifyContent: 'center' },
+  locateBtnText: { color: '#FFF', fontSize: 12, fontWeight: 'bold', marginLeft: 4 },
   centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF', borderBottomWidth: 1, borderColor: '#E2E8F0', zIndex: 10 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

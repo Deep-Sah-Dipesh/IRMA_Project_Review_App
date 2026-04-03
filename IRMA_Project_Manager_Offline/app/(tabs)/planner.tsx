@@ -3,29 +3,134 @@ import { View, Text, TouchableOpacity, FlatList, TextInput, StyleSheet, Keyboard
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
-import * as SecureStore from 'expo-secure-store'; // Ensures path isolation
+import * as SecureStore from 'expo-secure-store'; 
 import { useRouter, useFocusEffect } from 'expo-router';
-import { useUserStore } from '../../store/userStore';
-import { getProjectsWithLocalKmls } from '../../utils/locationHelpers';
+import { doc, getDoc } from 'firebase/firestore';
 
-// Helper for consistent folder names
+import { db as firestoreDb } from '../../utils/firebaseConfig';
+import { useUserStore } from '../../store/userStore';
+
 const getFolderName = (pId: string, tId: string) => {
-  const safeId = String(pId).replace(/[\/\\]/g, '-');
-  const safeTender = String(tId || 'NoTender').replace(/[\/\\]/g, '-');
-  return `${safeId}_${safeTender}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${pId}_${tId || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 };
 
 type SortOption = 'Project Title' | 'Physical Progress';
 
+const getActiveUserId = async () => {
+  try {
+    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
+    if (sessionStr) {
+      const parsedSession = JSON.parse(sessionStr);
+      let uId = parsedSession.uniqueUserId || parsedSession.userId;
+      try {
+        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
+        if (userSnap.exists() && userSnap.data().uniqueUserId) {
+            uId = userSnap.data().uniqueUserId;
+            if (parsedSession.uniqueUserId !== uId) {
+                parsedSession.uniqueUserId = uId;
+                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
+            }
+        }
+      } catch (e) { console.warn(e); }
+      return uId || 'AnonymousUser';
+    }
+  } catch(e) { console.warn(e); }
+  return 'AnonymousUser';
+};
+
+const scanForKmls = async (userId: string) => {
+  const kmlSet = new Set<string>();
+  const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
+  try {
+    const info = await FileSystem.getInfoAsync(baseDir);
+    if (!info.exists) return kmlSet;
+    const folders = await FileSystem.readDirectoryAsync(baseDir);
+    for (const folder of folders) {
+      if (folder === 'SQLite' || folder.endsWith('.json')) continue;
+      let hasKml = false;
+      const checkDir = async (dirPath: string) => {
+        if (hasKml) return;
+        try {
+            const dInfo = await FileSystem.getInfoAsync(dirPath);
+            if (!dInfo.exists || !dInfo.isDirectory) return;
+            const items = await FileSystem.readDirectoryAsync(dirPath);
+            for (const item of items) {
+                if (hasKml) return;
+                if (item.toLowerCase().endsWith('.kml')) { hasKml = true; return; }
+                const subPath = `${dirPath}${item}`;
+                const subInfo = await FileSystem.getInfoAsync(subPath);
+                if (subInfo.isDirectory) await checkDir(`${subPath}/`);
+            }
+        } catch(e) {}
+      };
+      await checkDir(`${baseDir}${folder}/`);
+      if (hasKml) kmlSet.add(folder);
+    }
+  } catch(e) {}
+  return kmlSet;
+};
+
+const PlannerCard = React.memo(({ item, isVisited, isPlanned, activeTab, onPressCard, onTogglePlan }: any) => {
+  let iconName: keyof typeof Ionicons.glyphMap = "add";
+  let iconColor = "#2563EB";
+  let btnStyle = { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' };
+  let btnLabel = "Add";
+
+  if (activeTab === 'pending') {
+    iconName = "close-circle";
+    iconColor = "#EF4444";
+    btnStyle = { backgroundColor: '#FEF2F2', borderColor: '#FECACA' };
+    btnLabel = "Remove";
+  } else if (isVisited) {
+    iconName = "checkmark";
+    iconColor = "#16A34A";
+    btnStyle = { backgroundColor: '#DCFCE7', borderColor: '#BBF7D0' };
+    btnLabel = "Visited";
+  } else if (isPlanned) {
+    iconName = "calendar";
+    iconColor = "#CA8A04";
+    btnStyle = { backgroundColor: '#FEF9C3', borderColor: '#FDE047' };
+    btnLabel = "Planned";
+  }
+
+  return (
+    <TouchableOpacity 
+      style={[styles.card, isVisited && activeTab !== 'pending' && { opacity: 0.6 }]}
+      activeOpacity={0.7}
+      onPress={() => onPressCard(item)}
+    >
+      <View style={styles.cardHeaderRow}>
+        <Text style={styles.cardId}>{item.project_id}</Text>
+        <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
+      </View>
+
+      <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
+      <Text style={styles.cardTitle}>{item.project_title}</Text>
+
+      <View style={styles.cardBottomRow}>
+        <Text style={styles.cardType}>{item.project_type}</Text>
+        
+        <TouchableOpacity 
+          style={[styles.actionBtn, btnStyle]} 
+          onPress={() => onTogglePlan(item)}
+          disabled={isVisited && activeTab !== 'pending'}
+        >
+          <Ionicons name={iconName} size={16} color={iconColor} />
+          <Text style={[styles.actionBtnLabel, { color: iconColor }]}>{btnLabel}</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 export default function PlannerTab() {
   const store = useUserStore();
   const db = SQLite.useSQLiteContext();
-  const router = useRouter();
+  const router = useRouter(); 
   
   const [activeTab, setActiveTab] = useState<'pending' | 'planning'>('pending');
   const [district, setDistrict] = useState('');
   
-  // Dashboard-style Search & Sort State
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('Project Title');
@@ -34,71 +139,52 @@ export default function PlannerTab() {
   
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [visitedSet, setVisitedSet] = useState<Set<string>>(new Set());
+  const [plannerItems, setPlannerItems] = useState<any[]>([]); 
 
-  // Expand/Collapse State
   const [collapsedPendingUlbs, setCollapsedPendingUlbs] = useState<Set<string>>(new Set());
   const [expandedPlanningUlbs, setExpandedPlanningUlbs] = useState<Set<string>>(new Set());
 
-  const getUserId = async () => {
-    try {
-      const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-      if (sessionStr) return JSON.parse(sessionStr).userId || 'AnonymousUser';
-    } catch(e) {}
-    return 'AnonymousUser';
-  };
-
-  // Smart Scanning strictly isolated per user
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
       
-      const scanVisited = async () => {
+      const scanVisitedAndPlanner = async () => {
         try {
-          const userId = await getUserId();
-          const validVisited = new Set<string>();
-          
-          // Check for valid KML Location Pins
-          const kmlProjects = await getProjectsWithLocalKmls().catch(() => new Set<string>());
-          kmlProjects.forEach(id => validVisited.add(id));
-
-          // Deep scan projects directory for User
+          const userId = await getActiveUserId();
           const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
-          const folders = await FileSystem.readDirectoryAsync(baseDir).catch(() => []);
           
-          for (const folder of folders) {
-             if (validVisited.has(folder)) continue;
-             
-             const folderPath = `${baseDir}${folder}/`;
-             let hasFiles = false;
-             
-             const checkHasFiles = async (currentPath: string) => {
-                if (hasFiles) return;
-                const items = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
-                for (const item of items) {
-                   if (hasFiles) return;
-                   const fullPath = `${currentPath}${item}`;
-                   const info = await FileSystem.getInfoAsync(fullPath);
-                   if (info.isDirectory) {
-                      await checkHasFiles(`${fullPath}/`);
-                   } else {
-                      if (!item.endsWith('.json') && item !== '.keep') {
-                         hasFiles = true;
-                      }
-                   }
-                }
-             };
+          const validVisited = new Set<string>();
+          let loadedPlanner = [];
 
-             await checkHasFiles(folderPath);
-             if (hasFiles) validVisited.add(folder);
-          }
+          try {
+            const info = await FileSystem.getInfoAsync(baseDir);
+            if (info.exists) {
+              const folders = await FileSystem.readDirectoryAsync(baseDir);
+              for (const folder of folders) {
+                 if (validVisited.has(folder) || folder === 'SQLite' || folder.endsWith('.json')) continue;
+                 
+                 const projIdMatch = folder.split('_')[0];
+                 if (projIdMatch) {
+                     validVisited.add(projIdMatch);
+                 }
+              }
+            }
+            
+            const path = `${baseDir}planner_cache.json`;
+            const pInfo = await FileSystem.getInfoAsync(path);
+            if (pInfo.exists) loadedPlanner = JSON.parse(await FileSystem.readAsStringAsync(path));
+          } catch(e) {}
           
-          if (isMounted) setVisitedSet(validVisited);
+          if (isMounted) {
+              setVisitedSet(validVisited);
+              setPlannerItems(loadedPlanner);
+          }
         } catch(e) {}
       };
       
-      scanVisited();
+      scanVisitedAndPlanner();
       return () => { isMounted = false; };
-    }, [])
+    }, [activeTab]) 
   );
 
   useEffect(() => {
@@ -117,39 +203,39 @@ export default function PlannerTab() {
     loadProjects();
   }, [store.selectedState, district]);
 
-  // Reset UI states on tab switch
   useEffect(() => {
     setSearch('');
     setIsSearchActive(false);
   }, [activeTab]);
 
-  const toggleUlb = (ulbName: string) => {
+  const toggleUlb = useCallback((ulbName: string) => {
     if (activeTab === 'pending') {
-      const newSet = new Set(collapsedPendingUlbs);
-      if (newSet.has(ulbName)) newSet.delete(ulbName);
-      else newSet.add(ulbName);
-      setCollapsedPendingUlbs(newSet);
+      setCollapsedPendingUlbs(prev => {
+        const newSet = new Set(prev);
+        newSet.has(ulbName) ? newSet.delete(ulbName) : newSet.add(ulbName);
+        return newSet;
+      });
     } else {
-      const newSet = new Set(expandedPlanningUlbs);
-      if (newSet.has(ulbName)) newSet.delete(ulbName);
-      else newSet.add(ulbName);
-      setExpandedPlanningUlbs(newSet);
+      setExpandedPlanningUlbs(prev => {
+        const newSet = new Set(prev);
+        newSet.has(ulbName) ? newSet.delete(ulbName) : newSet.add(ulbName);
+        return newSet;
+      });
     }
-  };
+  }, [activeTab]);
 
-  const togglePlanState = (proj: any) => {
-    const strictId = getFolderName(proj.project_id, proj.tender_id);
-    const legacyId = `${proj.project_id}_${proj.tender_id}`;
-    
-    if (visitedSet.has(strictId)) return;
+  const togglePlanState = useCallback(async (proj: any) => {
+    const cleanProjId = proj.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (visitedSet.has(cleanProjId)) return;
 
-    const existingItem = store.plannerItems.find(i => i.id === strictId || i.id === legacyId);
+    let items = [...plannerItems];
+    const existingIdx = items.findIndex(i => i.projectId === proj.project_id);
 
-    if (existingItem) {
-      store.removePlannerItem(existingItem.id);
+    if (existingIdx > -1) {
+      items.splice(existingIdx, 1);
     } else {
-      store.addPlannerItem({
-        id: strictId,
+      items.push({
+        id: getFolderName(proj.project_id, proj.tender_id),
         projectId: proj.project_id,
         tenderId: proj.tender_id,
         title: proj.project_title,
@@ -158,7 +244,19 @@ export default function PlannerTab() {
         ulb: proj.ulb
       });
     }
-  };
+    
+    setPlannerItems(items);
+    
+    const userId = await getActiveUserId();
+    const userDir = `${FileSystem.documentDirectory}projects/${userId}/`;
+    await FileSystem.makeDirectoryAsync(userDir, { intermediates: true }).catch(()=>{});
+    const cachePath = `${userDir}planner_cache.json`;
+    await FileSystem.writeAsStringAsync(cachePath, JSON.stringify(items));
+  }, [plannerItems, visitedSet]);
+
+  const handlePressCard = useCallback((item: any) => {
+     router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
+  }, [router]);
 
   const handleSelectModal = (selection: string) => {
     setSortBy(selection as SortOption);
@@ -166,20 +264,29 @@ export default function PlannerTab() {
     setActiveModal(null);
   };
 
+  // Dynamic count logic that accurately maps state filters with user's planner data
   const pendingCount = useMemo(() => {
-    return store.plannerItems.filter(i => !visitedSet.has(getFolderName(i.projectId, i.tenderId))).length;
-  }, [store.plannerItems, visitedSet]);
+    let count = 0;
+    const pendingProjIds = new Set(plannerItems.map(i => i.projectId));
+    allProjects.forEach(p => {
+      const cleanProjId = p.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const isPending = pendingProjIds.has(p.project_id);
+      const isVisited = visitedSet.has(cleanProjId);
+      if (isPending && !isVisited) count++;
+    });
+    return count;
+  }, [allProjects, plannerItems, visitedSet]);
 
   const listData = useMemo(() => {
     const q = search.toLowerCase();
+    const pendingProjIds = new Set(plannerItems.map(i => i.projectId));
+
     const groups: Record<string, any[]> = {};
-    const pendingProjIds = new Set(store.plannerItems.map(i => i.id));
 
     allProjects.forEach(p => {
-      const strictId = getFolderName(p.project_id, p.tender_id);
-      const legacyId = `${p.project_id}_${p.tender_id}`;
-      const isPending = pendingProjIds.has(strictId) || pendingProjIds.has(legacyId);
-      const isVisited = visitedSet.has(strictId);
+      const cleanProjId = p.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const isPending = pendingProjIds.has(p.project_id);
+      const isVisited = visitedSet.has(cleanProjId);
 
       let shouldInclude = false;
       if (activeTab === 'pending') {
@@ -210,10 +317,10 @@ export default function PlannerTab() {
       
       projects.sort((a, b) => {
         if (activeTab === 'planning') {
-          const aVisited = visitedSet.has(getFolderName(a.project_id, a.tender_id));
-          const bVisited = visitedSet.has(getFolderName(b.project_id, b.tender_id));
-          const aPlanned = pendingProjIds.has(getFolderName(a.project_id, a.tender_id)) || pendingProjIds.has(`${a.project_id}_${a.tender_id}`);
-          const bPlanned = pendingProjIds.has(getFolderName(b.project_id, b.tender_id)) || pendingProjIds.has(`${b.project_id}_${b.tender_id}`);
+          const aVisited = visitedSet.has(a.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
+          const bVisited = visitedSet.has(b.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
+          const aPlanned = pendingProjIds.has(a.project_id);
+          const bPlanned = pendingProjIds.has(b.project_id);
 
           const weightA = aVisited ? 3 : (aPlanned ? 1 : 2);
           const weightB = bVisited ? 3 : (bPlanned ? 1 : 2);
@@ -252,10 +359,10 @@ export default function PlannerTab() {
     });
 
     return flattenedData;
-  }, [allProjects, search, sortBy, sortOrder, activeTab, visitedSet, store.plannerItems, collapsedPendingUlbs, expandedPlanningUlbs]);
+  }, [allProjects, search, sortBy, sortOrder, activeTab, visitedSet, plannerItems, collapsedPendingUlbs, expandedPlanningUlbs]);
 
 
-  const renderItem = ({ item }: { item: any }) => {
+  const renderItem = useCallback(({ item }: { item: any }) => {
     if (item.isHeader) {
       const isExpanded = activeTab === 'pending' 
         ? !collapsedPendingUlbs.has(item.ulb) 
@@ -272,60 +379,21 @@ export default function PlannerTab() {
       );
     }
 
-    const isVisited = visitedSet.has(item.id);
-    const isPlanned = store.plannerItems.some(i => i.id === item.id || i.id === `${item.project_id}_${item.tender_id}`);
-
-    let iconName: keyof typeof Ionicons.glyphMap = "add";
-    let iconColor = "#2563EB";
-    let btnStyle = { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' };
-    let btnLabel = "Add";
-
-    if (activeTab === 'pending') {
-      iconName = "close-circle";
-      iconColor = "#EF4444";
-      btnStyle = { backgroundColor: '#FEF2F2', borderColor: '#FECACA' };
-      btnLabel = "Remove";
-    } else if (isVisited) {
-      iconName = "checkmark";
-      iconColor = "#16A34A";
-      btnStyle = { backgroundColor: '#DCFCE7', borderColor: '#BBF7D0' };
-      btnLabel = "Visited";
-    } else if (isPlanned) {
-      iconName = "calendar";
-      iconColor = "#CA8A04";
-      btnStyle = { backgroundColor: '#FEF9C3', borderColor: '#FDE047' };
-      btnLabel = "Planned";
-    }
+    const cleanProjId = item.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const isVisited = visitedSet.has(cleanProjId);
+    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id);
 
     return (
-      <TouchableOpacity 
-        style={[styles.card, isVisited && activeTab !== 'pending' && { opacity: 0.6 }]}
-        activeOpacity={0.7}
-        onPress={() => router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any)}
-      >
-        <View style={styles.cardHeaderRow}>
-          <Text style={styles.cardId}>{item.project_id}</Text>
-          <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
-        </View>
-
-        <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
-        <Text style={styles.cardTitle}>{item.project_title}</Text>
-
-        <View style={styles.cardBottomRow}>
-          <Text style={styles.cardType}>{item.project_type}</Text>
-          
-          <TouchableOpacity 
-            style={[styles.actionBtn, btnStyle]} 
-            onPress={() => togglePlanState(item)}
-            disabled={isVisited && activeTab !== 'pending'}
-          >
-            <Ionicons name={iconName} size={16} color={iconColor} />
-            <Text style={[styles.actionBtnLabel, { color: iconColor }]}>{btnLabel}</Text>
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
+      <PlannerCard 
+         item={item} 
+         isVisited={isVisited} 
+         isPlanned={isPlanned} 
+         activeTab={activeTab} 
+         onPressCard={handlePressCard} 
+         onTogglePlan={togglePlanState} 
+      />
     );
-  };
+  }, [activeTab, collapsedPendingUlbs, expandedPlanningUlbs, visitedSet, plannerItems, toggleUlb, togglePlanState, handlePressCard]);
 
   return (
     <View style={styles.container}>
@@ -400,6 +468,10 @@ export default function PlannerTab() {
         data={listData}
         keyExtractor={item => item.id}
         renderItem={renderItem}
+        removeClippedSubviews={true}
+        initialNumToRender={8}
+        maxToRenderPerBatch={10}
+        windowSize={5}
         contentContainerStyle={{ padding: 15, paddingBottom: 100 }}
         ListEmptyComponent={
           <Text style={styles.emptyText}>
