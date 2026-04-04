@@ -45,7 +45,6 @@ const getActiveUserId = async () => {
         const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
         if (userSnap.exists() && userSnap.data().uniqueUserId) {
             uId = userSnap.data().uniqueUserId;
-            // Ensure uniqueUserId caches securely locally immediately
             if (parsedSession.uniqueUserId !== uId) {
                 parsedSession.uniqueUserId = uId;
                 await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
@@ -326,7 +325,6 @@ export default function ProjectDetails() {
 
       if (latestKmlUri) {
          const content = await FileSystem.readAsStringAsync(latestKmlUri);
-         // Extremely robust regex bypassing all visual spaces/newlines injected by mapping software
          const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
          if (coordMatch) {
              Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
@@ -475,7 +473,7 @@ export default function ProjectDetails() {
                 <DataCell label="No. of Tenders" value={project.no_of_tenders} /> 
                 <DataCell label="NIT Date" value={project.nit_date} />
                 <DataCell label="Award Date" value={project.award_date} />
-                <DataCell label="Sch. Completion" value={project.completion_date} />
+                <DataCell label="Sch. Completion" value={project.sch_project_completion_date} />
                 
                 <View style={[styles.dataColumn, { width: '48%', marginBottom: 15 }]}>
                   <Text style={styles.dataLabel}>Last Visited</Text>
