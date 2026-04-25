@@ -134,3 +134,12 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Ignore all mainDataBase files
+mainDataBase_*.db
+
+# other confidential files
+Header.jpg
+Footer.jpg
+letter_template.py
+*template*.xlsx
