@@ -143,3 +143,6 @@ Header.jpg
 Footer.jpg
 letter_template.py
 *template*.xlsx
+*.xlsx
+*.png
+*.html

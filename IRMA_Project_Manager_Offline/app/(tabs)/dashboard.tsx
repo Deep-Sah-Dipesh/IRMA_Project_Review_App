@@ -11,6 +11,8 @@ import * as SecureStore from 'expo-secure-store';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../utils/firebaseConfig';
 import { generateCloudLinkAndUpload } from '../../utils/cloudUploader';
+import * as XLSX from 'xlsx';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
@@ -92,6 +94,12 @@ export default function DashboardTab() {
   const [showPinModal, setShowPinModal] = useState(false);
   const [recoveryPin, setRecoveryPin] = useState('');
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
+
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('');
+  const [exportEndDate, setExportEndDate] = useState('');
+  const [showDatePicker, setShowDatePicker] = useState<'start' | 'end' | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const sortOptions: SortOption[] = ['Date-Time', 'Project Title', 'Project ID', 'Tender ID', 'Number of Files'];
 
@@ -192,7 +200,6 @@ export default function DashboardTab() {
                  if (itemInfo.isDirectory) {
                      const subItems = await FileSystem.readDirectoryAsync(itemPath).catch(() => []);
                      
-                     // Highly robust check against DB schema to differentiate legacy project folders from user sandbox names
                      const isLegacyProject = allTenders.some(t => {
                          const expectedFolder = `${t.project_id}_${t.tender_id || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
                          return expectedFolder === item || item.includes(t.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
@@ -589,7 +596,6 @@ export default function DashboardTab() {
 
       if (latestKmlUri) {
          const content = await FileSystem.readAsStringAsync(latestKmlUri);
-         // Extremely robust regex bypassing all visual spaces/newlines injected by mapping software
          const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
          if (coordMatch) {
              Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
@@ -599,6 +605,186 @@ export default function DashboardTab() {
       }
       else Alert.alert("Not Found", "No KML file found for this project.");
     } catch (e) { Alert.alert("Error", "Could not open KML file."); }
+  };
+
+  // Logic to process deeply and export multiple sheets based on Visit Dates
+  const handleExportDataExcel = async () => {
+    if (exportStartDate && exportEndDate && exportStartDate > exportEndDate) {
+      Alert.alert("Invalid Date Range", "Start date cannot be after the end date.");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const visitDataMap: Record<number, any[]> = {};
+
+      for (const proj of recentProjects) {
+        const items = await FileSystem.readDirectoryAsync(proj.exactPath).catch(() => []);
+        const visits = [];
+
+        // 1. Scan for Visit Folders
+        for (const item of items) {
+          if (item.startsWith('VISIT_')) {
+            const parts = item.split('_');
+            if (parts.length >= 3 && parts[2].length === 8) {
+              const d = parts[2];
+              const formattedDate = `${d.substring(0,4)}-${d.substring(4,6)}-${d.substring(6,8)}`;
+              visits.push({ dirName: item, date: formattedDate, timestamp: d });
+            }
+          }
+        }
+
+        visits.sort((a,b) => a.timestamp.localeCompare(b.timestamp));
+
+        // 2. If no VISIT_ folders, treat the root path as Visit 1
+        if (visits.length === 0) {
+          visits.push({ dirName: '', date: proj.latestDate !== 'Unknown' ? proj.latestDate : 'Unknown', timestamp: '00000000' });
+        }
+
+        // 3. Process each visit sequentially
+        for (let i = 0; i < visits.length; i++) {
+          const v = visits[i];
+
+          // Apply date filters
+          if (exportStartDate && v.date !== 'Unknown' && v.date < exportStartDate) continue;
+          if (exportEndDate && v.date !== 'Unknown' && v.date > exportEndDate) continue;
+
+          let stats = { geoImg: 0, otherImg: 0, kml: 0, vid: 0, text: 0, docs: 0, totalFiles: 0 };
+
+          // Traverse deeper within this specific visit folder
+          const traverseAndTally = async (currentPath: string, parentDir: string = '') => {
+             const subItems = await FileSystem.readDirectoryAsync(currentPath).catch(() => []);
+             for (const file of subItems) {
+                const fullPath = `${currentPath}${file}`;
+                const info = await FileSystem.getInfoAsync(fullPath).catch(() => null);
+                if (!info) continue;
+                
+                if (info.isDirectory) {
+                   // Avoid scanning sibling VISIT_ folders if scanning from root
+                   if (v.dirName === '' && file.startsWith('VISIT_')) continue; 
+                   await traverseAndTally(`${fullPath}/`, file);
+                } else {
+                   stats.totalFiles++;
+                   const lowerFile = file.toLowerCase();
+                   const ext = lowerFile.split('.').pop() || '';
+                   const normalizedParent = parentDir.toLowerCase();
+
+                   if (lowerFile.endsWith('.kml')) stats.kml++;
+                   else if (['txt'].includes(ext)) stats.text++;
+                   else if (['mp4', 'mov'].includes(ext)) stats.vid++;
+                   else if (['pdf', 'doc', 'docx', 'csv', 'xls', 'xlsx'].includes(ext)) stats.docs++;
+                   else if (['jpg', 'png', 'jpeg'].includes(ext)) {
+                       if (normalizedParent.includes('geotag') || currentPath.toLowerCase().includes('geotag')) stats.geoImg++;
+                       else stats.otherImg++;
+                   } else if (!file.endsWith('.json')) {
+                       stats.docs++;
+                   }
+                }
+             }
+          };
+
+          await traverseAndTally(proj.exactPath + (v.dirName ? v.dirName + '/' : ''));
+
+          // Record metrics for mapping 
+          const visitNum = i + 1;
+          if (!visitDataMap[visitNum]) visitDataMap[visitNum] = [];
+
+          visitDataMap[visitNum].push({
+            "Project ID": `${proj.project_id} (${v.date})`,
+            "Tender ID": proj.tender_id || 'N/A',
+            "Project Title": proj.project_title || 'N/A',
+            "Date of Visit": v.date,
+            "Geotagged Images": stats.geoImg,
+            "Geolocations (KML)": stats.kml,
+            "Videos": stats.vid,
+            "Other Photos": stats.otherImg,
+            "Notes & Text": stats.text,
+            "Documents (PDF/XLS)": stats.docs,
+            "Total Files": stats.totalFiles
+          });
+        }
+      }
+
+      if (Object.keys(visitDataMap).length === 0) {
+         Alert.alert("No Data", "No project visits match the selected criteria.");
+         setIsExporting(false);
+         return;
+      }
+
+      // Generate Workbook and Sheets
+      const wb = XLSX.utils.book_new();
+      Object.keys(visitDataMap).sort((a,b) => Number(a)-Number(b)).forEach(vNumStr => {
+         const vNum = Number(vNumStr);
+         const ws = XLSX.utils.json_to_sheet(visitDataMap[vNum]);
+         
+         const colWidths = [
+           { wch: 30 }, { wch: 15 }, { wch: 40 }, { wch: 15 }, 
+           { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 15 }
+         ];
+         ws['!cols'] = colWidths;
+
+         XLSX.utils.book_append_sheet(wb, ws, `Visit ${vNum}`);
+      });
+      
+      const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+      
+      // Strict dynamic file naming per user requirement
+      let datePart = 'All_Dates';
+      if (exportStartDate && exportEndDate) datePart = `${exportStartDate}-${exportEndDate}`;
+      else if (exportStartDate) datePart = `From_${exportStartDate}`;
+      else if (exportEndDate) datePart = `Until_${exportEndDate}`;
+      
+      const exportName = `IRMA_Visit_Summary_${datePart}.xlsx`;
+      const uri = `${FileSystem.cacheDirectory}${exportName}`;
+      
+      // 1. Save to local app cache securely
+      await FileSystem.writeAsStringAsync(uri, wbout, { encoding: FileSystem.EncodingType.Base64 });
+      
+      // 2. Automatically save to the SAF Device Folder seamlessly
+      try {
+          let targetDirUri = await SecureStore.getItemAsync('irma_saf_directory_uri');
+          
+          if (!targetDirUri) {
+              const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+              if (permissions.granted) {
+                  targetDirUri = permissions.directoryUri;
+                  await SecureStore.setItemAsync('irma_saf_directory_uri', targetDirUri);
+              }
+          }
+          
+          if (targetDirUri) {
+              try { 
+                  await FileSystem.StorageAccessFramework.readDirectoryAsync(targetDirUri); 
+              } catch(e) {
+                  const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+                  if (permissions.granted) {
+                      targetDirUri = permissions.directoryUri;
+                      await SecureStore.setItemAsync('irma_saf_directory_uri', targetDirUri);
+                  } else {
+                      targetDirUri = null;
+                  }
+              }
+              
+              if (targetDirUri) {
+                  const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+                  const safFileUri = await FileSystem.StorageAccessFramework.createFileAsync(targetDirUri, exportName, mimeType);
+                  await FileSystem.writeAsStringAsync(safFileUri, wbout, { encoding: FileSystem.EncodingType.Base64 });
+              }
+          }
+      } catch (safError) {
+          console.warn("Failed to auto-save to device folder:", safError);
+      }
+
+      // 3. Prompt external share sheet functionality 
+      await Sharing.shareAsync(uri);
+      
+      setShowExportModal(false);
+    } catch (error) {
+      console.error(error);
+      Alert.alert("Export Failed", "There was an error generating the Excel summary.");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const renderSectionHeader = ({ section }: { section: any }) => {
@@ -716,13 +902,24 @@ export default function DashboardTab() {
             </TouchableWithoutFeedback>
             <Text style={styles.subTitle}>{isRecoveryMode ? 'Accessing data from all users on this device' : `Personalised data for ${activeUserId}`}</Text>
           </View>
-          <TouchableOpacity 
-             style={[styles.toolbarBtn, isSelectionMode ? { backgroundColor: '#FEE2E2', borderColor: '#FECACA' } : { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
-             onPress={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
-          >
-             <Ionicons name={isSelectionMode ? "close" : "checkbox-outline"} size={16} color={isSelectionMode ? "#EF4444" : "#2563EB"} />
-             <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select'}</Text>
-          </TouchableOpacity>
+          
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity 
+               style={[styles.toolbarBtn, { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' }]} 
+               onPress={() => setShowExportModal(true)}
+            >
+               <Ionicons name="document-text" size={16} color="#16A34A" />
+               <Text style={[styles.toolbarBtnText, { color: '#16A34A' }]}>Export</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+               style={[styles.toolbarBtn, isSelectionMode ? { backgroundColor: '#FEE2E2', borderColor: '#FECACA' } : { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
+               onPress={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
+            >
+               <Ionicons name={isSelectionMode ? "close" : "checkbox-outline"} size={16} color={isSelectionMode ? "#EF4444" : "#2563EB"} />
+               <Text style={[styles.toolbarBtnText, isSelectionMode ? { color: '#EF4444' } : { color: '#2563EB' }]}>{isSelectionMode ? 'Cancel' : 'Select'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.searchSortRow}>
@@ -821,6 +1018,73 @@ export default function DashboardTab() {
         </View>
       </Modal>
 
+      <Modal visible={showExportModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: '#FFF', padding: 25, borderRadius: 16, width: '85%' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
+              <Ionicons name="analytics" size={24} color="#16A34A" style={{ marginRight: 8 }} />
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E293B' }}>Export Data Summary</Text>
+            </View>
+            <Text style={{ fontSize: 13, color: '#64748B', marginBottom: 20 }}>Generate a detailed Excel file with separate sheets for multi-visits, categorized file tally, and timeline structure. It will be saved to your device folder and shared.</Text>
+            
+            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#334155', marginBottom: 6 }}>Start Date (Optional)</Text>
+            <TouchableOpacity 
+              style={[styles.modalSearchInput, { backgroundColor: '#F8FAFC', marginBottom: 15, justifyContent: 'center' }]} 
+              onPress={() => setShowDatePicker('start')}
+            >
+              <Text style={{ color: exportStartDate ? '#1E293B' : '#94A3B8', fontSize: 16 }}>
+                {exportStartDate || 'Select Start Date...'}
+              </Text>
+            </TouchableOpacity>
+
+            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#334155', marginBottom: 6 }}>End Date (Optional)</Text>
+            <TouchableOpacity 
+              style={[styles.modalSearchInput, { backgroundColor: '#F8FAFC', marginBottom: 20, justifyContent: 'center' }]} 
+              onPress={() => setShowDatePicker('end')}
+            >
+              <Text style={{ color: exportEndDate ? '#1E293B' : '#94A3B8', fontSize: 16 }}>
+                {exportEndDate || 'Select End Date...'}
+              </Text>
+            </TouchableOpacity>
+
+            {showDatePicker && (
+              <DateTimePicker
+                value={showDatePicker === 'start' && exportStartDate ? new Date(exportStartDate) : showDatePicker === 'end' && exportEndDate ? new Date(exportEndDate) : new Date()}
+                mode="date"
+                display="default"
+                onChange={(event, selectedDate) => {
+                  const currentType = showDatePicker;
+                  setShowDatePicker(null); 
+                  
+                  if (event.type === 'set' && selectedDate) {
+                    const year = selectedDate.getFullYear();
+                    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(selectedDate.getDate()).padStart(2, '0');
+                    const formattedDate = `${year}-${month}-${day}`;
+                    
+                    if (currentType === 'start') setExportStartDate(formattedDate);
+                    else if (currentType === 'end') setExportEndDate(formattedDate);
+                  }
+                }}
+              />
+            )}
+
+            {isExporting ? (
+              <ActivityIndicator size="large" color="#16A34A" />
+            ) : (
+              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 15 }}>
+                 <TouchableOpacity onPress={() => { setShowExportModal(false); setExportStartDate(''); setExportEndDate(''); setShowDatePicker(null); }}>
+                   <Text style={{ color: '#64748B', fontWeight: 'bold', padding: 10 }}>Cancel</Text>
+                 </TouchableOpacity>
+                 <TouchableOpacity onPress={handleExportDataExcel} style={{ backgroundColor: '#16A34A', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
+                   <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Generate Excel</Text>
+                 </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={!!activeModal} transparent animationType="fade">
         <TouchableWithoutFeedback onPress={() => setActiveModal(null)}>
           <View style={styles.modalOverlay}>
@@ -859,39 +1123,29 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
   subTitle: { fontSize: 12, color: '#64748B', fontWeight: '600', marginTop: 2 },
-  
   recoveryBadge: { backgroundColor: '#EF4444', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 10 },
-  
   searchSortRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15, gap: 10 },
   sortGroup: { flexDirection: 'row', alignItems: 'center' },
-  
   toolbarBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
   toolbarBtnText: { fontSize: 13, color: '#475569', marginLeft: 6, fontWeight: '700' },
-  
   activeSearchContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
   searchInput: { flex: 1, paddingVertical: 8, paddingHorizontal: 10, fontSize: 14 },
   modalSearchInput: { paddingVertical: 10, paddingHorizontal: 15, fontSize: 16, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
-
   dateHeaderWrapper: { backgroundColor: '#F8FAFC', paddingVertical: 10 },
   dateHeaderContainer: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 15 },
   dateHeader: { alignItems: 'center' },
   dateHeaderText: { backgroundColor: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 'bold', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' },
-  
   cardSelected: { borderColor: '#2563EB', backgroundColor: '#EFF6FF', borderWidth: 2 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  
   dovContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   dovText: { color: '#065F46', fontSize: 11, fontWeight: 'bold' },
-  
   emptyBox: { alignItems: 'center', marginTop: 80 },
   emptyText: { fontSize: 18, fontWeight: 'bold', color: '#475569', marginTop: 15 },
   emptySubText: { fontSize: 14, color: '#94A3B8', textAlign: 'center', marginTop: 8, paddingHorizontal: 20 },
-  
   bulkActionBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#FFF', padding: 20, paddingBottom: 30, borderTopWidth: 1, borderColor: '#E2E8F0', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', elevation: 10 },
   bulkCount: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
   bulkSize: { fontSize: 12, color: '#64748B', fontWeight: '600', marginTop: 2 },
   bulkBtn: { flexDirection: 'row', paddingVertical: 10, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-
   loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', zIndex: 100 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },
