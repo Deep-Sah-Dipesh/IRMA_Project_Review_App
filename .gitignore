@@ -142,6 +142,8 @@ mainDataBase_*.db
 Header.jpg
 Footer.jpg
 letter_template.py
+# /databases_and_scripts
+*.csv
 *template*.xlsx
 *.xlsx
 *.png
