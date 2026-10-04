@@ -1,0 +1,780 @@
+
+====================================================================================================
+WORKBOOK PRE-FLIGHT INSPECTION   2026-10-04 20:05
+====================================================================================================
+  folder          : C:\Users\rosyd\Projects\IRMA_Project_Review_App\databases_and_scripts
+  generator config: generate_Quarterly_DB.py  (DATA_DATE=20261004, input dir: C:\Users\rosyd\Projects\IRMA_Project_Review_App\databases_and_scripts)
+  python 3.13.5 | pandas 3.0.0 | openpyxl 3.1.5 | calamine not installed (optional)
+
+====================================================================================================
+1. WORKBOOKS
+====================================================================================================
+
+  Project-Monitoring-Form-Data-Oct.xlsx   (8.5 MB, modified 2026-10-04 19:30, used by config)
+      creator: Unknown Creator | last modified by: Unknown Creator | saved: 2026-10-04T16:15:58+05:30 | app: Microsoft Excel
+      styles.xml: OK
+      reader: NOTE: Project-Monitoring-Form-Data-Oct.xlsx has a damaged style table; read it using: style-repaired copy. Tip: opening it in Excel and re-saving as .xlsx fixes this permanently.
+      6 sheet(s): ['Project Details', 'Tender Details', 'Project Contact Details', 'Project Outcome', 'DMA Details', 'Expenditure Plan']
+
+  IRMA-Review-Pro-Data-Oct.xlsx   (3.6 MB, modified 2026-10-04 19:30, used by config)
+      creator: Unknown Creator | last modified by: Unknown Creator | saved: 2026-10-04T16:09:00+05:30 | app: Microsoft Excel
+      styles.xml: OK
+      reader: NOTE: IRMA-Review-Pro-Data-Oct.xlsx has a damaged style table; read it using: style-repaired copy. Tip: opening it in Excel and re-saving as .xlsx fixes this permanently.
+      11 sheet(s): ['IRMA-Reviewed-1', 'Major-Observation', 'IRMA-Reviewed-2', 'IRMA-Reviewed-3', 'IRMA-Reviewed-4', 'IRMA-Reviewed-5', 'IRMA-Reviewed-6', 'IRMA-Reviewed-7', 'IRMA-Reviewed-8', 'IRMA-Reviewed-9', 'IRMA-Reviewed-10']
+
+  other data files in the folder (not inspected): ['Cleaned_Major_Observation-20260701.csv', 'Cleaned_Project_Details-20260701.csv', 'Cleaned_Review_Data-20260701.csv', 'IRMA-Review-Pro-Data.xlsx', 'IRMA_Review_Data-Major_Observation-20260425.csv', 'IRMA_Review_Data-Major_Observation-20260701.csv', 'IRMA_Review_Data-Major_Observation-old.csv', 'IRMA_Review_Data-Review1.csv', 'IRMA_Review_Data-Review8-20260701.csv', 'Monitoring_Data-Project_Details-20260701.csv', 'Monitoring_Data-Project_Details.csv', 'Monitoring_Data-Tender_Details.csv']
+
+====================================================================================================
+2. SHEETS USED BY THE GENERATOR CONFIG
+====================================================================================================
+  [tenders         ] Tender Details         header row 4  rows    2,345  cols   24
+  [project_details ] Project Details        header row 5  rows    1,844  cols  137
+  [observations    ] Major-Observation      header row 0  rows   25,112  cols   14
+  [review_1        ] IRMA-Reviewed-1        header row 0  rows    1,755  cols   23
+  [review_2        ] IRMA-Reviewed-2        header row 0  rows    1,555  cols   23
+  [review_3        ] IRMA-Reviewed-3        header row 0  rows    1,517  cols   23
+  [review_4        ] IRMA-Reviewed-4        header row 0  rows    1,462  cols   23
+  [review_5        ] IRMA-Reviewed-5        header row 0  rows    1,400  cols   23
+  [review_6        ] IRMA-Reviewed-6        header row 0  rows    1,339  cols   23
+  [review_7        ] IRMA-Reviewed-7        header row 0  rows    1,218  cols   23
+  [review_8        ] IRMA-Reviewed-8        header row 0  rows    1,034  cols   23
+  [review_9        ] IRMA-Reviewed-9        header row 0  rows      868  cols   23
+  [review_10       ] IRMA-Reviewed-10       header row 0  rows      147  cols   23
+
+  sheets in the workbooks NOT used by the config (dimensions only):
+    Project-Monitoring-Form-Data-Oct.xlsx :: Project Contact Details: 4,589 rows x 13 cols; probable headers: ['Sno.', 'Project ID', 'State', 'District', 'ULB', 'Project Type', 'Project Title', 'Project Role']
+    Project-Monitoring-Form-Data-Oct.xlsx :: Project Outcome: 5,131 rows x 19 cols; probable headers: ['Sno.', 'Project ID', 'State', 'District', 'ULB', 'Project Type', 'Project Title', 'Ward No.']
+    Project-Monitoring-Form-Data-Oct.xlsx :: DMA Details: 1,526 rows x 9 cols; probable headers: ['Sno.', 'Project ID', 'State', 'District', 'ULB', 'DMA Location', 'Ward Number', 'Household Benefitted']
+    Project-Monitoring-Form-Data-Oct.xlsx :: Expenditure Plan: 169,085 rows x 10 cols; probable headers: ['Sno.', 'Project ID', 'Tender ID', 'State', 'District', 'ULB', 'Financial Year', 'Month']
+
+====================================================================================================
+3. DATABASE COLUMN MAPPING  (does every DB column find its header?)
+====================================================================================================
+  Full per-column mapping table is in the report file; problems are shown here.
+
+[tenders]  Project-Monitoring-Form-Data-Oct.xlsx :: Tender Details
+    header row 4 | data rows 2,345 | named columns 24 | 2 metadata row(s) above header
+    rows with a project_id: 2,345 (generator will insert these) | rows without: 0
+    DB column                      Status   Header in sheet                           Fill%
+    project_id                     OK       Project ID                                100.0
+    tender_id                      OK       Tender ID                                 100.0
+    tender_name                    OK       Tender Name                               100.0
+    project_type                   OK       Project Type                              100.0
+    project_title                  OK       Project Title                             100.0
+    state                          OK       State                                     100.0
+    district                       OK       District                                  100.0
+    ulb                            OK       ULB                                       100.0
+    nit_date                       OK       NIT Issued Date                           100.0
+    award_date                     OK       Contract Award Date                        97.0
+    bidder_name                    OK       Successful Bidder Name                     97.1
+    capex                          OK       CAPEX (in Cr.)                             97.1
+    om                             OK       O&M (in CR.)                               97.1
+    scope                          OK       Brief Scope of Work                        93.2
+    physical_progress              OK       Physical Progress (in %)                   93.0
+    financial_progress             OK       Financial Progress (in %)                  83.7
+    expenditure                    OK       Expenditure Incurred (in Cr.)              89.9
+    ! finance_received: matched 'Finance Received (in CR.)' but only 0.1% filled
+    finance_received               LOW      Finance Received (in CR.)                   0.1
+    excess_expenditure             OK       Excess Expenditure incurred (in Cr.)        6.4
+    justification                  OK       justification for excess expenditure in…    9.0
+    actual_completion_date         OK       Actual Completion Date                     42.2
+    images                         OK       Images                                    100.0
+    updated_on                     OK       Updated On                                100.0
+    mapped OK: 22 | low fill: 1 | missing: 0 | sheet columns the generator ignores: 1
+    ignored columns: ['Sno.']
+
+[project_details]  Project-Monitoring-Form-Data-Oct.xlsx :: Project Details
+    header row 5 | data rows 1,844 | named columns 137 | 2 metadata row(s) above header
+    rows with a project_id: 1,844 (generator will insert these) | rows without: 0
+    DB column                      Status   Header in sheet                           Fill%
+    project_id                     OK       Project ID                                100.0
+    state                          OK       State                                     100.0
+    district                       OK       District                                  100.0
+    ulb                            OK       ULB                                       100.0
+    project_type                   OK       Project Type                              100.0
+    project_title                  OK       Project Title                             100.0
+    no_of_tenders                  OK       No. of Tenders                            100.0
+    physical_progress              OK       Physical Progress (in %)                   89.9
+    financial_progress             OK       Financial Progress (in %)                  84.3
+    sch_project_completion_date    OK       Sch. Project Completion Date               92.9
+    actual_completion_date         OK       Actual Completion Date                     38.1
+    water_body_name                OK       Water Body/Park Name                       36.2
+    area                           OK       Area (in sq. km)                           36.2
+    latitude                       OK       Latitude                                   36.2
+    longitude                      OK       Longitude                                  36.2
+    est_capex                      OK       Est. CAPEX (in Cr.)                       100.0
+    est_om                         OK       Est. O&M (in Cr.)                         100.0
+    awarded_capex                  OK       Awarded CAPEX (in Cr.)                     92.7
+    awarded_om                     OK       Awarded O&M (in Cr.)                       75.7
+    mapped OK: 19 | low fill: 0 | missing: 0 | sheet columns the generator ignores: 118
+    ignored columns: ['Sno.', 'SWAP Tranche', 'Project Milestone', 'Project Description', 'Expenditure Incurred (in Cr.)', 'Finance Received (in CR.)', 'Excess Expenditure incurred (in Cr.)', 'Components', 'Features', 'Monitoring Elements', 'Project executed in PPP mode?', 'Proposed quantity of water to be supplied (in MLD)', 'Achieved quantity of water supplied (in MLD)', 'Proposed additional quantity of water supplied (in MLD)', 'Achieved additional quantity of water supplied (in MLD)', 'Water treatment would involve', 'Proposed water treatment capacity to be added (in MLD)', 'Achieved water treatment capacity added (in MLD)', 'Proposed storage capacity to be newly built', 'Achieved storage capacity newly built', 'Proposed storage capacity added', 'Achieved storage capacity added', 'Proposed length of transmission network to be laid (in km)', 'Achieved length of transmission network laid (in km)', 'Proposed length of new distribution network to be laid (in km)', 'Achieved length of new distribution network laid (in km)', 'Proposed length of existing distribution network to be replaced (in km)', 'Achieved length of existing distribution network replaced (in km)', 'Proposed no. of pumping stations to be added', 'Achieved no. of pumping stations added', 'Proposed length of pumping mains (in km)', 'Achieved length of pumping mains (in km)', 'Sewage Treatment would involve', 'Proposed sewage treatment capacity to be added or augmented (in MLD)', 'Achieved sewage treatment capacity added or augmented (in MLD)', 'Proposed length of existing sewer network to be laid (in km)', 'Achieved length of existing sewer network laid (in km)', 'Proposed length of new sewer network to be laid (in km)', 'Achieved length of new sewer network laid (in km)', 'Proposed quantity of water to be recycled or reused (in MLD)', 'Achieved quantity of water recycled or reused (in MLD)', 'Proposed no. of sewer pumping stations to be added', 'Achieved no. of sewer pumping stations added', 'Proposed length of sewer pumping mains (in km)', 'Achieved length of sewer pumping mains (in km)', 'Proposed Volume', 'Achieved Volume', 'Proposed Biological Oxygen Demand (mg/L)', 'Achieved Biological Oxygen Demand (mg/L)', 'Proposed Chemical Oxygen Demand (mg/L)', 'Achieved Chemical Oxygen Demand (mg/L)', 'Proposed Dissolved Oxygen Turbidity (NTU)(mg/L)', 'Achieved Dissolved Oxygen Turbidity (NTU)(mg/L)', 'Proposed Total Dissolved Solids (mg/L)', 'Achieved Total Dissolved Solids (mg/L)', 'Proposed Turbidity (NTU)', 'Achieved Turbidity (NTU)', 'Development of Public Space', 'Proposed changes for enhancing the public space', 'Status of development of public space', 'Diversion of Drain/Sewer', 'Status of diversion of drain/sewer', 'Whether rejuvenated water body can become a water supply Source', 'Design capacity of rejuvenated water supply source (in MLD)', 'Est. HH to be benefitted (in wards)', 'Est. HH to be benefitted (in slums)', 'Est. New connections proposed (in wards)', 'Est. New connections proposed (in slums)', 'Est. existing connections to be serviced (in wards)', 'Est. existing connections to be serviced (in slums)', 'Est. TPC (in Cr.)', 'Est. DPR Preparation Date', 'Est. Project Award Date', 'Est. Project Completion Date', 'SHPSC Approval Date', 'DPR Preparation Date', 'SLTC Approval Date', 'Awarded TPC (in Cr.)', 'Viability Cost', 'CAPEX CA', 'CAPEX State Funds', 'CAPEX ULB Funds', 'CAPEX PPP', 'CAPEX XV FC', 'CAPEX Other Funds', 'O&M State Funds', 'O&M ULB Funds', 'O&M PPP', 'O&M XV FC', 'O&M Other Funds', 'O&M Plan', 'Notional cost of land', 'Monitoring of Quantity & Quality of water supply', 'No. of manholes proposed', 'Plan for cleaning', 'CCTV Network in Park', 'Project ID_2', 'Updated On', 'Existing PH', 'Proposed PH', 'Achieved PH', 'Existing Coliform CFU/100 ml)', 'Proposed Coliform CFU/100 ml)', 'Achieved Coliform CFU/100 ml)', 'Existing Total Nitrogen (mg/L)', 'Proposed Total Nitrogen (mg/L)', 'Achieved Total Nitrogen (mg/L)', 'Shallow Aquifier', 'Annual Consumption Existing Value (in KL)', 'Annual Consumption Target Value (in KL)', 'Annual Consumption Achieved Value (in KL)', 'Ground Water Table Existing Value (in M)', 'Ground Water Table Target Value (in M)', 'Ground Water Table Achieved Value (in M)', 'Water Recharge Existing Value (in KL)', 'Water Recharge Target Value (in KL)', 'Water Recharge Achieved Value (in KL)', 'City Census']
+
+[observations]  IRMA-Review-Pro-Data-Oct.xlsx :: Major-Observation
+    header row 0 | data rows 25,112 | named columns 14 | 0 metadata row(s) above header
+    rows with a project_code: 25,112 (generator will insert these) | rows without: 0
+    DB column                      Status   Header in sheet                           Fill%
+    project_code                   OK       Project Code                              100.0
+    state                          OK       State                                     100.0
+    ulb                            OK       ULB                                       100.0
+    project_type                   OK       Project Type                              100.0
+    project_title                  OK       Project Title                             100.0
+    visit_date                     OK       Date of Visit                             100.0
+    form_type                      OK       Form-Type                                 100.0
+    category                       OK       Category                                  100.0
+    component                      OK       Component                                  14.1
+    severity                       OK       Severity                                   94.2
+    observations                   OK       IRMA Major Observations                    99.3
+    mapped OK: 11 | low fill: 0 | missing: 0 | sheet columns the generator ignores: 3
+    ignored columns: ['Sno.', 'Response by State', 'Final Comments by IRMA']
+
+[reviews]  10 sheet(s), applied oldest -> newest
+    sheet                     rows  cols  unique codes  dup codes  review fields matched 
+    IRMA-Reviewed-1          1,755    23         1,755          0  7/7
+    IRMA-Reviewed-2          1,555    23         1,555          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-2'] -['visit-1']
+    IRMA-Reviewed-3          1,517    23         1,517          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-3'] -['visit-1']
+    IRMA-Reviewed-4          1,462    23         1,462          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-4'] -['visit-1']
+    IRMA-Reviewed-5          1,400    23         1,400          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-5'] -['visit-1']
+    IRMA-Reviewed-6          1,339    23         1,339          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-6'] -['visit-1']
+    IRMA-Reviewed-7          1,218    23         1,218          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-7'] -['visit-1']
+    IRMA-Reviewed-8          1,034    23         1,034          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-8'] -['visit-1']
+    IRMA-Reviewed-9            868    23           868          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-9'] -['visit-1']
+    IRMA-Reviewed-10           147    23           147          0  7/7
+    header drift vs 'IRMA-Reviewed-1': +['visit-10'] -['visit-1']
+    review field -> header text actually used (count of sheets):
+      irma_personnel     {'IRMA Personel': 10}
+      designation        {'Designation': 10}
+      contact            {'Contact Number': 10}
+      email              {'E-mail': 10}
+      state_officer      {'State Officer': 10}
+      so_contact         {'State Officer Contact': 10}
+      so_email           {'State Officer E-mail': 10}
+
+====================================================================================================
+CROSS-SHEET CHECKS
+====================================================================================================
+  projects in project_details: 1,844
+  tenders: 1,756 distinct codes | not in project_details: 0 (would match if case-insensitive: 0)
+      projects in project_details with no rows in tenders: 88
+  observations: 1,636 distinct codes | not in project_details: 64 (would match if case-insensitive: 0)
+      first 15: ['AS-LUMDING-18007', 'AS-SILCHAR-18715', 'CH-CHANDIGARH-18031', 'DL-EDMC-10931', 'DL-EDMC-11226', 'DL-EDMC-7844', 'DL-EDMC-7851', 'DL-EDMC-7863', 'DL-EDMC-7865', 'DL-EDMC-7870', 'DL-EDMC-7871', 'DL-EDMC-7874', 'DL-EDMC-7875', 'DL-EDMC-7876', 'DL-EDMC-7877']
+      projects in project_details with no rows in observations: 272
+  review coverage: 1,611/1,844 projects appear in at least one review sheet | without any review: 233 | review codes not in project_details: 144
+      first review-only codes: ['AS-GUWAHATI-9102', 'AS-HAMREN-9047', 'AS-LUMDING-18007', 'AS-SILCHAR-18715', 'CH-CHANDIGARH-18030', 'CH-CHANDIGARH-18031', 'DL-EDMC-10931', 'DL-EDMC-11226', 'DL-EDMC-7844', 'DL-EDMC-7851', 'DL-EDMC-7863', 'DL-EDMC-7865', 'DL-EDMC-7870', 'DL-EDMC-7871', 'DL-EDMC-7874']
+
+
+####################################################################################################
+APPENDIX: FULL COLUMN PROFILES (every column of every sheet used by the config)
+####################################################################################################
+
+--- Project-Monitoring-Form-Data-Oct.xlsx :: Tender Details [tenders]
+    raw grid: 2,350 rows x 24 cols | header row (0-based): 4 (key-column match: 4, heuristic: 4) | data rows: 2,345 (+0 empty rows dropped) | named columns: 24
+    metadata row 1: AMRUT 2.0 Approved Projects Data (Project Monitoring Module)
+    metadata row 2: Date & Time: 04/10/2026 16:16PM
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          2,345  100.0    2,345  numeric                  1 | 2 | 3
+      2 B    Project ID                                    2,345  100.0    1,756  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ITANAGAR-6999
+      3 C    State                                         2,345  100.0       17  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      4 D    District                                      2,345  100.0      188  text                     TAWANG | PAPUM PARE | CHANGLANG
+      5 E    ULB                                           2,345  100.0      652  text                     TAWANG | ITANAGAR | KIMIN
+      6 F    Project Type                                  2,345  100.0        4  text                     Parks/ Green Spaces Developme… | Water Body Rejuvenation | Water Supply
+      7 G    Project Title                                 2,345  100.0    1,755  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | Providing 24x7 Drinking water…
+        ! 52 cells have leading/trailing spaces (generator strips them)
+      8 H    Tender ID                                     2,345  100.0    1,950  text                     UD/TWG/23-24/AMRUT/WO/01 | 2024 APUDH 1828 1 | No.EE/PHE/ITA/PB-39/2024-25/2…
+        ! 125 cells have leading/trailing spaces (generator strips them)
+      9 I    Tender Name                                   2,345  100.0    2,075  text                     PROCUREMENT FOR EQUIPMENTS FO… | Sri Tenzin Monpa | Providing 24x7 drinking water…
+        ! 302 cells have leading/trailing spaces (generator strips them)
+     10 J    NIT Issued Date                               2,345  100.0      790  date                     15-02-2024 | 13-03-2024 | 07-03-2025
+     11 K    Contract Award Date                           2,275   97.0      738  date                     08-03-2024 | 10-06-2024 | 29-04-2025
+     12 L    Successful Bidder Name                        2,276   97.1    1,488  text                     M/s Teresa Enterprises | M/s Royal Agency 8 | Shri Phassang Nima
+        ! 192 cells have leading/trailing spaces (generator strips them)
+     13 M    CAPEX (in Cr.)                                2,276   97.1    1,920  numeric                  0.16 | 2.63 | 14.77
+        ! 11 cells have leading/trailing spaces (generator strips them)
+     14 N    O&M (in CR.)                                  2,276   97.1      831  numeric                  0 | 2.03 | 0.45
+        ! 10 cells have leading/trailing spaces (generator strips them)
+     15 O    Brief Scope of Work                           2,185   93.2    1,932  text                     Tawang is the HQ of Tawang di… | Panga Teng Tso Lake also know… | The detailed proposal include…
+        ! 531 cells contain line breaks (generator flattens them); 1,128 cells have leading/trailing spaces (generator strips them)
+     16 P    Physical Progress (in %)                      2,181   93.0      148  mostly numeric (1 non-n… 100 | 70 | 65
+        ! non-numeric examples: ['45%']
+     17 Q    Financial Progress (in %)                     1,963   83.7    1,402  numeric                  141.13 | 59.7 | 13.54
+        ! 143 progress values outside 0-100
+     18 R    Expenditure Incurred (in Cr.)                 2,107   89.9    1,540  numeric                  0.2258 | 1.57 | 2
+     19 S    Finance Received (in CR.)                         2    0.1        2  numeric                  14.5 | 0.6
+     20 T    Excess Expenditure incurred (in Cr.)            151    6.4      138  mostly numeric (9 non-n… 0.0658 | 0.0031999999999996 | 0.0151
+        ! non-numeric examples: ['9.9999999999989e-05', '8.8817841970013e-16', '2.2204460492503e-16']
+     21 U    justification for excess expenditure incu…      212    9.0      184  text                     Excess expenditure Incurred s… | no over expenditureis incurred | actual expenditure incurred i…
+        ! 11 cells contain line breaks (generator flattens them); 39 cells have leading/trailing spaces (generator strips them)
+     22 V    Actual Completion Date                          989   42.2      488  date                     31-03-2025 | 24-03-2025 | 28-02-2025
+     23 W    Images                                        2,345  100.0       88  numeric                  9 | 6 | 19
+     24 X    Updated On                                    2,345  100.0      231  date                     08-04-2026 | 21-09-2026 | 17-07-2026
+
+--- Project-Monitoring-Form-Data-Oct.xlsx :: Project Details [project_details]
+    raw grid: 1,850 rows x 140 cols | header row (0-based): 5 (key-column match: 5, heuristic: 5) | data rows: 1,844 (+0 empty rows dropped) | named columns: 137
+    metadata row 1: AMRUT 2.0 Approved Projects Data (Project Monitoring Module)
+    metadata row 2: Date & Time: 04/10/2026 16:15PM
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,844  100.0    1,844  numeric                  1 | 2 | 3
+      2 B    Project ID                                    1,844  100.0    1,844  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ZIRO-18979
+        ! duplicate header (generator renames 2nd+ to '<name>_2')
+      3 C    State                                         1,844  100.0       17  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      4 D    District                                      1,844  100.0      191  text                     TAWANG | LOWER SUBANSARI | SHI YOMI
+      5 E    ULB                                           1,844  100.0      667  text                     TAWANG | ZIRO | TATO
+      6 F    Project Type                                  1,844  100.0        4  text                     Parks/ Green Spaces Developme… | Water Body Rejuvenation | Water Supply
+      7 G    Project Title                                 1,844  100.0    1,843  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | providing water supplyt at Bi…
+        ! 51 cells have leading/trailing spaces (generator strips them)
+      8 H    SWAP Tranche                                  1,844  100.0        4  mostly numeric (154 non… 1 | 3 | 2
+        ! non-numeric examples: ['Special']
+      9 I    Project Milestone                             1,844  100.0        6  text                     Project Completed | Contract Awarded | DPR Approved
+     10 J    Project Description                           1,844  100.0    1,689  text                     Tawang is the HQ of Tawang di… | Panga Teng Tso Lake also know… | providing water supplyt at Bi…
+        ! 320 cells contain line breaks (generator flattens them); 93 cells have leading/trailing spaces (generator strips them)
+     11 K    No. of Tenders                                1,844  100.0       18  numeric                  1 | 0 | 2
+     12 L    Physical Progress (in %)                      1,657   89.9      293  numeric                  100 | 70 | 65
+        ! 1 progress values outside 0-100
+     13 M    Financial Progress (in %)                     1,555   84.3    1,097  numeric                  100 | 59.7 | 13.54
+     14 N    Expenditure Incurred (in Cr.)                 1,514   82.1    1,271  numeric                  0.2258 | 1.57 | 2
+     15 O    Finance Received (in CR.)                         3    0.2        3  numeric                  14.5 | 0.6 | 0
+     16 P    Excess Expenditure incurred (in Cr.)            128    6.9       77  numeric                  0.07 | 0.02 | 0.01
+     17 Q    Actual Completion Date                          702   38.1      394  date                     31-03-2025 | 24-03-2025 | 28-02-2025
+     18 R    Water Body/Park Name                            668   36.2      623  text                     Construction of Parks and Gre… | PT Tso Lake | Boda Lake Kimin
+        ! 64 cells have leading/trailing spaces (generator strips them)
+     19 S    Area (in sq. km)                                668   36.2      417  text                     0.5 | 0.092 | 0.006
+        ! 7 cells have leading/trailing spaces (generator strips them)
+     20 T    Latitude                                        668   36.2      618  numeric                  27.594983 | 27.637177 | 27.311853
+        ! 10 latitude values outside -90..90; 7 cells have leading/trailing spaces (generator strips them)
+     21 U    Longitude                                       668   36.2      619  numeric                  91.868931 | 91.857038 | 93.981192
+        ! 11 longitude values outside -180..180; 5 cells have leading/trailing spaces (generator strips them)
+     22 V    Components                                    1,411   76.5      359  text                     Civil works, Childrens play e… | Storage, Distribution Network… | Storage, Distribution Network…
+     23 W    Features                                      1,167   63.3      110  text                     Last mile connectivity | 24x7 water supply, Technology… | Technology upgradation, Last …
+     24 X    Monitoring Elements                           1,176   63.8       98  text                     SCADA | Sensors | Meters, SCADA, GIS, Sensors
+        ! 1 cells contain line breaks (generator flattens them)
+     25 Y    Project executed in PPP mode?                 1,844  100.0        2  text                     No | Yes
+     26 Z    Proposed quantity of water to be supplied…      311   16.9      196  numeric                  1.95 | 1.8 | 2.5
+     27 AA   Achieved quantity of water supplied (in M…       40    2.2       26  numeric                  3 | 15 | 4
+     28 AB   Proposed additional quantity of water sup…      129    7.0       56  numeric                  9.8 | 5 | 4.96
+     29 AC   Achieved additional quantity of water sup…       63    3.4       29  numeric                  250 | 3 | 6
+     30 AD   Water treatment would involve                   289   15.7        2  text                     Setting up a new water treatm… | Increase existing water treat…
+     31 AE   Proposed water treatment capacity to be a…      289   15.7      177  numeric                  0.63 | 1.71 | 1.95
+     32 AF   Achieved water treatment capacity added (…       23    1.2       13  numeric                  32 | 12 | 0
+     33 AG   Proposed storage capacity to be newly bui…      450   24.4      190  numeric                  0.63 | 1.71 | 1.95
+     34 AH   Achieved storage capacity newly built            61    3.3       39  numeric                  1 | 0 | 0.5
+     35 AI   Proposed storage capacity added                  55    3.0       43  numeric                  0.6 | 1 | 2
+     36 AJ   Achieved storage capacity added                   4    0.2        4  numeric                  0 | 4 | 0.8
+     37 AK   Proposed length of transmission network t…      477   25.9      198  numeric                  11.55 | 16.02 | 11.5
+     38 AL   Achieved length of transmission network l…      142    7.7      107  numeric                  6.25 | 0 | 4.427
+     39 AM   Proposed length of new distribution netwo…      634   34.4      369  numeric                  11.551 | 16.021 | 31.47
+     40 AN   Achieved length of new distribution netwo…      290   15.7      223  numeric                  25.15 | 12 | 13.192
+     41 AO   Proposed length of existing distribution …      201   10.9      119  numeric                  15 | 8 | 5
+     42 AP   Achieved length of existing distribution …       68    3.7       49  numeric                  53.938 | 0 | 139.95
+     43 AQ   Proposed no. of pumping stations to be ad…      329   17.8       19  numeric                  1 | 2 | 3
+     44 AR   Achieved no. of pumping stations added           95    5.2        9  numeric                  0 | 1 | 3
+     45 AS   Proposed length of pumping mains (in km)        329   17.8      139  numeric                  0.5 | 1.5 | 3
+     46 AT   Achieved length of pumping mains (in km)        101    5.5       59  numeric                  0 | 3.42 | 0.3
+     47 AU   Sewage Treatment would involve                   62    3.4        2  text                     Setting up a new STP | Enhancing existing STP capaci…
+     48 AV   Proposed sewage treatment capacity to be …       61    3.3       44  numeric                  0.25 | 7 | 2
+     49 AW   Achieved sewage treatment capacity added …        8    0.4        7  numeric                  0 | 15 | 25
+     50 AX   Proposed length of existing sewer network…       54    2.9       43  numeric                  0.9 | 52.67 | 0.66
+     51 AY   Achieved length of existing sewer network…       15    0.8       12  numeric                  0.66 | 9.465 | 2
+     52 AZ   Proposed length of new sewer network to b…      131    7.1       91  numeric                  12 | 43.8 | 2
+     53 BA   Achieved length of new sewer network laid…       35    1.9       35  numeric                  0 | 213.89 | 9.35
+     54 BB   Proposed quantity of water to be recycled…       16    0.9       13  numeric                  1 | 90.8 | 50
+     55 BC   Achieved quantity of water recycled or re…        0    0.0        0  empty                    
+     56 BD   Proposed no. of sewer pumping stations to…       99    5.4       10  numeric                  3 | 0 | 2
+     57 BE   Achieved no. of sewer pumping stations ad…       20    1.1        2  numeric                  0 | 1
+     58 BF   Proposed length of sewer pumping mains (i…       99    5.4       60  numeric                  15.4 | 4.3 | 30.53
+     59 BG   Achieved length of sewer pumping mains (i…       23    1.2       19  numeric                  0 | 1.4 | 0.1
+     60 BH   Proposed Volume                                 422   22.9      218  numeric                  208850 | 50000 | 43200
+     61 BI   Achieved Volume                                 203   11.0      114  numeric                  1000 | 2000 | 1800
+     62 BJ   Proposed Biological Oxygen Demand (mg/L)        433   23.5       34  numeric                  2 | 4 | 5
+     63 BK   Achieved Biological Oxygen Demand (mg/L)        418   22.7       49  numeric                  0 | 5 | 2
+     64 BL   Proposed Chemical Oxygen Demand (mg/L)          422   22.9       50  numeric                  2.5 | 200 | 50
+     65 BM   Achieved Chemical Oxygen Demand (mg/L)          206   11.2       68  numeric                  178 | 20 | 8
+     66 BN   Proposed Dissolved Oxygen Turbidity (NTU)…      422   22.9       33  numeric                  7 | 5 | 8
+     67 BO   Achieved Dissolved Oxygen Turbidity (NTU)…      207   11.2       50  numeric                  3 | 2 | 6.7
+     68 BP   Proposed Total Dissolved Solids (mg/L)          422   22.9      104  numeric                  300 | 70 | 60
+     69 BQ   Achieved Total Dissolved Solids (mg/L)          207   11.2       89  numeric                  56 | 20 | 250
+     70 BR   Proposed Turbidity (NTU)                        422   22.9       28  numeric                  9 | 7 | 4
+     71 BS   Achieved Turbidity (NTU)                        205   11.1       53  numeric                  5 | 3 | 1.2
+     72 BT   Development of Public Space                     433   23.5        2  text                     No | Yes
+     73 BU   Proposed changes for enhancing the public…      216   11.7      196  text                     The rejuvenation project of N… | SITTING ARRANGEMENT AND STAIR… | boulder pitching, development…
+        ! 18 cells contain line breaks (generator flattens them); 6 cells have leading/trailing spaces (generator strips them)
+     74 BV   Status of development of public space           406   22.0        3  text                     Not Started | Achieved | In Progress
+     75 BW   Diversion of Drain/Sewer                        418   22.7        2  text                     No | Yes
+     76 BX   Status of diversion of drain/sewer              405   22.0        2  text                     Not Started | Achieved
+     77 BY   Whether rejuvenated water body can become…      433   23.5        2  text                     Yes | No
+     78 BZ   Design capacity of rejuvenated water supp…      418   22.7       16  numeric                  1 | 0 | 5
+     79 CA   Est. HH to be benefitted (in wards)           1,176   63.8      664  numeric                  2447 | 1600 | 15000
+     80 CB   Est. HH to be benefitted (in slums)             182    9.9      120  numeric                  94 | 2337 | 945
+     81 CC   Est. New connections proposed (in wards)      1,176   63.8      519  numeric                  2447 | 1600 | 15000
+     82 CD   Est. New connections proposed (in slums)        182    9.9      102  numeric                  94 | 2337 | 945
+     83 CE   Est. existing connections to be serviced …    1,176   63.8      499  numeric                  0 | 121 | 658
+     84 CF   Est. existing connections to be serviced …      182    9.9       44  numeric                  0 | 3000 | 6000
+     85 CG   Est. TPC (in Cr.)                             1,844  100.0    1,191  numeric                  0.429 | 3.08 | 16.04
+     86 CH   Est. CAPEX (in Cr.)                           1,844  100.0    1,162  numeric                  0.329 | 2.63 | 14.65
+     87 CI   Est. O&M (in Cr.)                             1,844  100.0      632  numeric                  0.1 | 0.45 | 1.39
+     88 CJ   Est. DPR Preparation Date                     1,844  100.0      546  date                     15-08-2022 | 15-10-2022 | 31-03-2026
+     89 CK   Est. Project Award Date                       1,844  100.0      515  date                     31-05-2023 | 28-05-2026 | 24-04-2026
+     90 CL   Est. Project Completion Date                  1,844  100.0      587  date                     31-03-2025 | 19-01-2028 | 26-08-2027
+     91 CM   SHPSC Approval Date                           1,844  100.0       16  date                     22-06-2023 | 19-05-2026 | 26-02-2026
+     92 CN   DPR Preparation Date                          1,798   97.5      628  date                     01-09-2022 | 27-04-2026 | 23-01-2026
+     93 CO   SLTC Approval Date                            1,770   96.0      428  date                     26-09-2022 | 30-04-2026 | 28-01-2026
+     94 CP   Sch. Project Completion Date                  1,713   92.9      540  date                     31-03-2026 | 30-11-2026 | 22-12-2027
+     95 CQ   Awarded CAPEX (in Cr.)                        1,710   92.7    1,499  numeric                  0.16 | 2.63 | 14.77
+     96 CR   Awarded O&M (in Cr.)                          1,396   75.7      816  numeric                  0 | 2.03 | 0.45
+     97 CS   Awarded TPC (in Cr.)                          1,844  100.0    1,486  numeric                  0.16 | 2.63 | 0
+     98 CT   Viability Cost                                    1    0.1        1  numeric                  137.36
+     99 CU   CAPEX CA                                      1,697   92.0    1,219  numeric                  0.144 | 2.367 | 13.293
+    100 CV   CAPEX State Funds                             1,710   92.7    1,192  mostly numeric (1 non-n… 0.016 | 0.2629999999999 | 1.477
+        ! non-numeric examples: ['9.99999999e-05']
+    101 CW   CAPEX ULB Funds                               1,698   92.1      797  mostly numeric (1 non-n… 0 | Delhi | 5.1926
+        ! non-numeric examples: ['Delhi']
+    102 CX   CAPEX PPP                                         1    0.1        1  numeric                  137.36
+    103 CY   CAPEX XV FC                                   1,698   92.1       13  numeric                  0 | 0.1 | 1.5
+    104 CZ   CAPEX Other Funds                                 9    0.5        9  text                     0.71(SJMMSVY) | 0.4469(SJMMSVY) | 2.33(SJMMSVY)
+    105 DA   O&M State Funds                               1,710   92.7      211  mostly numeric (1 non-n… 0 | 2.03 | 0.45
+        ! non-numeric examples: ['1.99999999e-05']
+    106 DB   O&M ULB Funds                                 1,698   92.1      642  numeric                  0 | 0.5299 | 0.0529
+    107 DC   O&M PPP                                           1    0.1        1  numeric                  181.84
+    108 DD   O&M XV FC                                     1,698   92.1       50  numeric                  0 | 0.067 | 1.559
+    109 DE   O&M Other Funds                                   9    0.5        1  text                     0(SJMMSVY)
+    110 DF   O&M Plan                                        923   50.1      617  text                     Rs. 0.1 cr is earmarked for o… | operation & maintenance of th… | 0.45 Lakh have been earmarked…
+        ! 153 cells contain line breaks (generator flattens them); 95 cells have leading/trailing spaces (generator strips them)
+    111 DG   Notional cost of land                           698   37.9      101  mostly numeric (6 non-n… 0 | 0.19 | 0.5
+        ! non-numeric examples: ['.4,57,99,09', 'India', '4,57,99,096']; 1 numbers contain thousands separators (stored as text)
+    112 DH   Monitoring of Quantity & Quality of water…      337   18.3       65  text                     Smart Sensors, SCADA | Smart Sensors | SCADA
+        ! 77 cells have leading/trailing spaces (generator strips them)
+    113 DI   No. of manholes proposed                        109    5.9       55  numeric                  0 | 13 | 450
+    114 DJ   Plan for cleaning                                89    4.8       58  text                     Diversion of the flowing sewe… | Manholes are cleaned by Bandi… | Cleaning will be done by main…
+        ! 1 cells contain line breaks (generator flattens them)
+    115 DK   CCTV Network in Park                            175    9.5        2  text                     no | yes
+    116 DL   Project ID_2                                  1,844  100.0    1,844  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ZIRO-18979
+        ! duplicate header (generator renames 2nd+ to '<name>_2')
+    117 DM   Updated On                                    1,803   97.8      240  date                     08-04-2026 | 21-09-2026 | 12-06-2026
+    121 DQ   Existing PH                                     222   12.0       39  numeric                  3 | 8 | 7.19
+    122 DR   Proposed PH                                     222   12.0       28  numeric                  4 | 8 | 7.19
+    123 DS   Achieved PH                                     222   12.0       47  numeric                  4 | 5 | 7.19
+    124 DT   Existing Coliform CFU/100 ml)                   222   12.0       48  numeric                  20 | 0.1 | 0
+    125 DU   Proposed Coliform CFU/100 ml)                   222   12.0       30  mostly numeric (2 non-n… 20 | 0.1 | 0
+        ! non-numeric examples: ['4.8 x 1013']
+    126 DV   Achieved Coliform CFU/100 ml)                   222   12.0       48  mostly numeric (2 non-n… 21 | 2 | 0
+        ! non-numeric examples: ['< 230']
+    127 DW   Existing Total Nitrogen (mg/L)                  222   12.0       29  numeric                  87 | 10 | 0
+    128 DX   Proposed Total Nitrogen (mg/L)                  222   12.0       28  numeric                  46 | 10 | 0
+    129 DY   Achieved Total Nitrogen (mg/L)                  222   12.0       35  numeric                  22 | 11 | 0
+    130 DZ   Shallow Aquifier                                433   23.5        2  numeric                  0 | 1
+    131 EA   Annual Consumption Existing Value (in KL)        11    0.6       11  numeric                  13304 | 6405.75 | 3942
+    132 EB   Annual Consumption Target Value (in KL)          11    0.6       11  numeric                  14634 | 8623.12 | 8130
+    133 EC   Annual Consumption Achieved Value (in KL)         0    0.0        0  empty                    
+    134 ED   Ground Water Table Existing Value (in M)         11    0.6        5  numeric                  75 | 150 | 70
+    135 EE   Ground Water Table Target Value (in M)           11    0.6       10  numeric                  75.5 | 150.44 | 150.19
+    136 EF   Ground Water Table Achieved Value (in M)          0    0.0        0  empty                    
+    137 EG   Water Recharge Existing Value (in KL)            11    0.6       11  numeric                  11657 | 2570.635 | 5557.77
+    138 EH   Water Recharge Target Value (in KL)              11    0.6       11  numeric                  12823 | 8993.406 | 11015.4
+    139 EI   Water Recharge Achieved Value (in KL)             0    0.0        0  empty                    
+    140 EJ   City Census                                   1,844  100.0      668  numeric                  801424 | 801443 | 263444
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: Major-Observation [observations]
+    raw grid: 25,113 rows x 14 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 25,112 (+0 empty rows dropped) | named columns: 14
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                         25,112  100.0   25,112  numeric                  1 | 2 | 3
+      2 B    State                                        25,112  100.0       17  text                     HIMACHAL PRADESH | GUJARAT | DELHI
+      3 C    ULB                                          25,112  100.0      623  text                     BILASPUR (M CL) | GANDHINAGAR | UNJHA
+      4 D    Project Code                                 25,112  100.0    1,636  text                     HP-BILASPUR-7755 | GJ-GANDHINAGAR-3963 | GJ-UNJHA-4738
+      5 E    Project Type                                 25,112  100.0        4  text                     Water Body Rejuvenation | Water Supply | Parks & Green Space Developme…
+      6 F    Project Title                                25,112  100.0    1,635  text                     Water Body at Changer Baintlu | GMC: Providing & Laying Water… | GARDEN DEVELOPMENT IN TP 4 FP…
+        ! 464 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                25,112  100.0      681  date                     21-09-2024 | 18-06-2024 | 16-07-2024
+      8 H    Form-Type                                    25,112  100.0        3  text                     Pre-Construction | Construction | Post-Construction
+      9 I    Category                                     25,112  100.0       21  text                     Review of Project Timelines | Overall Project | Tendering Process
+     10 J    Component                                     3,531   14.1        9  text                     Sewage Treatment | Sewer Network | Water Source Augmentation
+     11 K    Severity                                     23,647   94.2        3  text                     Low | Medium | High
+     12 L    IRMA Major Observations                      24,948   99.3   17,877  text                     The project has been complete… | Project Photos | Work was delayed due to plot …
+        ! 1,152 cells contain line breaks (generator flattens them); 657 cells have leading/trailing spaces (generator strips them)
+     13 M    Response by State                                 0    0.0        0  empty                    
+     14 N    Final Comments by IRMA                            0    0.0        0  empty                    
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-1 [review_1]
+    raw grid: 1,756 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,755 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,755  100.0    1,755  numeric                  1 | 2 | 3
+      2 B    State                                         1,755  100.0       17  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,755  100.0      630  text                     TAWANG | ITANAGAR | DAPORIJO
+      4 D    Project Code                                  1,755  100.0    1,755  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ITANAGAR-6999
+      5 E    Project Type                                  1,755  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,755  100.0    1,754  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | Providing 24x7 Drinking water…
+        ! 42 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,755  100.0      367  date                     12-09-2024 | 05-11-2025 | 18-09-2024
+      8 H    IRMA Personel                                 1,720   98.0      104  text                     BHASKAR MAJUMDER | AKHAND PRATAP SINGH | INDRA PRAKASH
+        ! 140 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,720   98.0       48  text                     Technical Expert | Deputy Team Leader | Technical Expertit team
+        ! 34 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,720   98.0       61  mostly numeric (52 non-… 9038584040 | 9721116001 | 6393933790
+        ! non-numeric examples: ['Technical Expert', 'jodhpur it team', 'test']; 6 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,719   97.9       51  text                     bhaskarmajumder94@gmail.com | apsingh5296@gmail.com | indrathetiger651@gmail.com
+        ! 15 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,718   97.9      817  text                     Phurpa Lhamu | Er. Tad Logi | Sawan Riang
+        ! 115 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,718   97.9      678  mostly numeric (73 non-… 9612197226 | 9402930661 | 9402933001
+        ! non-numeric examples: ['jodhpur it team', '97145 94348', 'Meghna Rao']; 8 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,718   97.9      587  text                     udtawang@gmail.com | eepheitanagar@rediffmail.com | eephednlg@gmail.com
+        ! 21 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,755  100.0        2  text                     Submitted | Save As Draft
+     16 P    Construction Status                           1,755  100.0        2  text                     Save As Draft | Submitted
+     17 Q    Post-Construction Status                      1,755  100.0        1  text                     Save As Draft
+     18 R    IRMA Observations Status                      1,755  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,755  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,755  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                    1,270   72.4        2  text                     Partially Compliant | Yes
+     22 V    Compliance Remarks                            1,249   71.2      242  text                     Image not clearly visible | agreed | a very small sized image uplo…
+        ! 28 cells contain line breaks (generator flattens them); 57 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-1                                       1,755  100.0       10  text                     Q2 - 2024-2025 | Q3 - 2025-2026 | Q1 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-2 [review_2]
+    raw grid: 1,556 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,555 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,555  100.0    1,555  numeric                  1 | 2 | 3
+      2 B    State                                         1,555  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,555  100.0      604  text                     TAWANG | ITANAGAR | DAPORIJO
+      4 D    Project Code                                  1,555  100.0    1,555  text                     AR-TAWANG-7176 | AR-TAWANG-7174 | AR-ITANAGAR-6999
+      5 E    Project Type                                  1,555  100.0        4  text                     Water Body Rejuvenation | Parks & Green Space Developme… | Water Supply
+      6 F    Project Title                                 1,555  100.0    1,554  text                     Rejuvenation of P.T. Tso Lake… | Construction of Parks & Green… | Providing 24x7 Drinking water…
+        ! 37 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,555  100.0      322  date                     28-11-2024 | 20-01-2026 | 19-01-2026
+      8 H    IRMA Personel                                 1,540   99.0       56  text                     BHASKAR MAJUMDER | INDRA PRAKASH | Saurabh Kumar Singh
+        ! 221 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,540   99.0       26  text                     Technical Expert | Deputy Team Leader | Team leader
+        ! 41 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,540   99.0       38  mostly numeric (24 non-… 9038584040 | Technical Expert | 6393933790
+        ! non-numeric examples: ['Technical Expert', '70439 03718', 'Dy. Team Leader']; 1 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,540   99.0       32  text                     bhaskarmajumder94@gmail.com | indrathetiger651@gmail.com | saurabhk101@rediffmail.com
+        ! 16 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,540   99.0      758  text                     Phurpa Lhamu | Er. Tad Logi | Sawan Riang
+        ! 90 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,540   99.0      640  mostly numeric (28 non-… 9612197226 | 9402930661 | 9402933001
+        ! non-numeric examples: ['Junior Engineer', 'Himangshu Sahariah', '97145 94348']; 8 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,540   99.0      544  text                     udtawang@gmail.com | eepheitanagar@rediffmail.com | eephednlg@gmail.com
+        ! 15 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,555  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,555  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,555  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,555  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,555  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,555  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                    1,192   76.7        2  text                     Partially Compliant | Yes
+     22 V    Compliance Remarks                            1,186   76.3      308  text                     Date of castin needs be displ… | submit the action taken regar… | ok
+        ! 22 cells contain line breaks (generator flattens them); 116 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-2                                       1,555  100.0        9  text                     Q3 - 2024-2025 | Q4 - 2025-2026 | Q2 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-3 [review_3]
+    raw grid: 1,518 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,517 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,517  100.0    1,517  numeric                  1 | 2 | 3
+      2 B    State                                         1,517  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,517  100.0      596  text                     TAWANG | ITANAGAR | DAPORIJO
+      4 D    Project Code                                  1,517  100.0    1,517  text                     AR-TAWANG-7176 | AR-TAWANG-7174 | AR-ITANAGAR-6999
+      5 E    Project Type                                  1,517  100.0        4  text                     Water Body Rejuvenation | Parks & Green Space Developme… | Water Supply
+      6 F    Project Title                                 1,517  100.0    1,516  text                     Rejuvenation of P.T. Tso Lake… | Construction of Parks & Green… | Providing 24x7 Drinking water…
+        ! 36 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,517  100.0      308  date                     24-02-2025 | 20-04-2026 | 03-03-2025
+      8 H    IRMA Personel                                 1,515   99.9       36  text                     SHASHIKANT KUMAR | INDRA PRAKASH | BHASKAR MAJUMDER
+        ! 215 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,515   99.9       19  text                     Technical Expert | Deputy Team Leader | AKHAND PRATAP SINGH
+        ! 79 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,515   99.9       36  mostly numeric (28 non-… 8920118011 | 6393933790 | 9038584040
+        ! non-numeric examples: ['70439 03718', '96872 28433', 'Technical Expert']; 1 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,515   99.9       35  text                     shashikantkumar3001@gmail.com | indrathetiger651@gmail.com | bhaskarmajumder94@gmail.com
+        ! 17 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,515   99.9      753  text                     Phurpa Lhamu | Er. Tad Logi | Sawan Riang
+        ! 94 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,515   99.9      624  mostly numeric (31 non-… 9612197226 | 9402930661 | 9402933001
+        ! non-numeric examples: ['97145 94348', 'ROHITBHA', 'Mr. V H Umat']; 10 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,515   99.9      535  text                     udtawang@gmail.com | eepheitanagar@rediffmail.com | eephednlg@gmail.com
+        ! 14 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,517  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,517  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,517  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,517  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,517  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,517  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                    1,140   75.1        3  text                     Yes | Partially Compliant | No
+     22 V    Compliance Remarks                            1,139   75.1      308  text                     proper care should be ensured… | mix design report should be p… | no safety jackets seen in the…
+        ! 22 cells contain line breaks (generator flattens them); 181 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-3                                       1,517  100.0        8  text                     Q4 - 2024-2025 | Q1 - 2026-2027 | Q3 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-4 [review_4]
+    raw grid: 1,463 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,462 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,462  100.0    1,462  numeric                  1 | 2 | 3
+      2 B    State                                         1,462  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,462  100.0      585  text                     TAWANG | ITANAGAR | DAPORIJO
+      4 D    Project Code                                  1,462  100.0    1,462  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ITANAGAR-6999
+      5 E    Project Type                                  1,462  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,462  100.0    1,462  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | Providing 24x7 Drinking water…
+        ! 36 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,462  100.0      280  date                     17-05-2025 | 18-07-2026 | 21-07-2026
+      8 H    IRMA Personel                                 1,457   99.7       31  text                     RAVINDRA KUMAR MAURYA | AMIT KUMAR GUWAHATI | AKHAND PRATAP SINGH
+        ! 156 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,457   99.7       15  text                     Deputy Team Leader | Technical Expert | AKHAND PRATAP SINGH
+        ! 81 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,457   99.7       35  mostly numeric (39 non-… 9453769313 | 9784643906 | 9721116001
+        ! non-numeric examples: ['70439 03718', '96872 28433', 'Team Leader']; 1 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,457   99.7       36  text                     MAURYA15790@GMAIL.COM | amit1997riet@gmail.com | apsingh5296@gmail.com
+        ! 17 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,457   99.7      726  text                     Phurpa Lhamu | Er. Tad Logi | Sawan Riang
+        ! 94 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,457   99.7      615  mostly numeric (27 non-… 9612197226 | 9402930661 | 9402933001
+        ! non-numeric examples: ['97145 94348', 'R.M. Jadav', '+91 84878 83118']; 10 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,457   99.7      520  text                     udtawang@gmail.com | eepheitanagar@rediffmail.com | eephednlg@gmail.com
+        ! 14 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,462  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,462  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,462  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,462  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,462  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,462  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                    1,081   73.9        2  text                     Partially Compliant | Yes
+     22 V    Compliance Remarks                            1,071   73.3      310  text                     Approved drawing be submitted… | as per comments | Project informatory board is …
+        ! 20 cells contain line breaks (generator flattens them); 259 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-4                                       1,462  100.0        8  text                     Q1 - 2025-2026 | Q2 - 2026-2027 | Q4 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-5 [review_5]
+    raw grid: 1,401 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,400 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,400  100.0    1,400  numeric                  1 | 2 | 3
+      2 B    State                                         1,400  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,400  100.0      564  text                     TAWANG | ITANAGAR | DAPORIJO
+      4 D    Project Code                                  1,400  100.0    1,400  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-ITANAGAR-6999
+      5 E    Project Type                                  1,400  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,400  100.0    1,400  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | Providing 24x7 Drinking water…
+        ! 36 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,400  100.0      264  date                     17-07-2025 | 05-10-2026 | 14-07-2025
+      8 H    IRMA Personel                                 1,395   99.6       26  text                     BHASKAR MAJUMDER | Saurabh Kumar Singh | GAJENDRA SINGH
+        ! 204 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,395   99.6       15  text                     Technical Expert | Deputy Team Leader | Team Leader
+        ! 60 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,395   99.6       30  mostly numeric (93 non-… 9038584040 | 7007407934 | 9582043842
+        ! non-numeric examples: ['70439 03718', '96872 28433', 'Technical Expert']; 10 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,395   99.6       30  text                     bhaskarmajumder94@gmail.com | saurabhk101@rediffmail.com | gs56570@gmail.com
+        ! 17 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,395   99.6      681  text                     Phurpa Lhamu | S C Maru | George Joseph
+        ! 118 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,395   99.6      581  mostly numeric (26 non-… 9612197226 | 9436046622 | 9436635408
+        ! non-numeric examples: ['Haribhai Gadhavi', '97145 94348', '+91 84878 83118']; 11 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,394   99.6      480  text                     udtawang@gmail.com | eeudhdaporijo@gmail.com | geomini2009@gmail.com
+        ! 15 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,400  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,400  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,400  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,400  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,400  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,400  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                      978   69.9        2  text                     Yes | Partially Compliant
+     22 V    Compliance Remarks                              955   68.2      250  text                     Make it available to IRMA tea… | okay | as per comments
+        ! 14 cells contain line breaks (generator flattens them); 178 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-5                                       1,400  100.0        7  text                     Q2 - 2025-2026 | Q3 - 2026-2027 | Q1 - 2026-2027
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-6 [review_6]
+    raw grid: 1,340 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,339 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,339  100.0    1,339  numeric                  1 | 2 | 3
+      2 B    State                                         1,339  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,339  100.0      534  text                     TAWANG | DAPORIJO | MIAO
+      4 D    Project Code                                  1,339  100.0    1,339  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-DAPORIJO-9108
+      5 E    Project Type                                  1,339  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,339  100.0    1,339  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | City Multipurpose Green Park …
+        ! 35 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,339  100.0      221  date                     10-11-2025 | 11-11-2025 | 16-10-2025
+      8 H    IRMA Personel                                 1,330   99.3       23  text                     INDRA PRAKASH | AKHAND PRATAP SINGH | GAJENDRA SINGH
+        ! 182 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,330   99.3       13  text                     Technical Expert | Deputy Team Leader | chnical Expert
+        ! 52 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,330   99.3       32  mostly numeric (68 non-… 6393933790 | 9721116001 | 9582043842
+        ! non-numeric examples: ['96872 28433', 'Technical Expert', '70439 03718']; 10 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,330   99.3       31  text                     indrathetiger651@gmail.com | apsingh5296@gmail.com | gs56570@gmail.com
+        ! 11 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,330   99.3      651  text                     Phurpa Lhamu | S C Maru | George Joseph
+        ! 119 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,330   99.3      554  mostly numeric (25 non-… 9612197226 | 9436046622 | 9436635408
+        ! non-numeric examples: ['Kumud Das', '97145 94348', '+91 84878 83118']; 12 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,331   99.4      468  text                     udtawang@gmail.com | eeudhdaporijo@gmail.com | geomini2009@gmail.com
+        ! 17 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,339  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,339  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,339  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,339  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,339  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,339  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                      911   68.0        2  text                     Yes | Partially Compliant
+     22 V    Compliance Remarks                              904   67.5      210  text                     agreed. | accepted | Submit before the IRMA team f…
+        ! 6 cells contain line breaks (generator flattens them); 123 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-6                                       1,339  100.0        5  text                     Q3 - 2025-2026 | Q2 - 2026-2027 | Q4 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-7 [review_7]
+    raw grid: 1,219 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,218 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,218  100.0    1,218  numeric                  1 | 2 | 3
+      2 B    State                                         1,218  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,218  100.0      467  text                     TAWANG | DAPORIJO | MIAO
+      4 D    Project Code                                  1,218  100.0    1,218  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-DAPORIJO-9108
+      5 E    Project Type                                  1,218  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,218  100.0    1,218  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | City Multipurpose Green Park …
+        ! 30 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,218  100.0      188  date                     17-01-2026 | 29-01-2026 | 27-01-2026
+      8 H    IRMA Personel                                 1,207   99.1       24  text                     Saurabh Kumar Singh | INDRA PRAKASH | AKHAND PRATAP SINGH
+        ! 197 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,207   99.1       12  text                     Deputy Team Leader | Technical Expert | Team leader
+        ! 57 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,207   99.1       25  mostly numeric (13 non-… 7007407934 | 6393933790 | 9721116001
+        ! non-numeric examples: ['70439 03718', '96872 28433']; 3 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,207   99.1       26  text                     saurabhk101@rediffmail.com | indrathetiger651@gmail.com | apsingh5296@gmail.com
+        ! 14 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,207   99.1      589  text                     Phurpa Lhamu | S C Maru | George Joseph
+        ! 119 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,207   99.1      506  mostly numeric (22 non-… 9612197226 | 9436046622 | 9436635408
+        ! non-numeric examples: ['97145 94348', '+91 84878 83118', '84696 02898']; 13 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,206   99.0      420  text                     udtawang@gmail.com | eeudhdaporijo@gmail.com | geomini2009@gmail.com
+        ! 18 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,218  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,218  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,218  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,218  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,218  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,218  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                      793   65.1        3  text                     Yes | Partially Compliant | No
+     22 V    Compliance Remarks                              760   62.4      192  text                     agreed | Plz put up before the visitin… | expedite the progress of work
+        ! 15 cells contain line breaks (generator flattens them); 81 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-7                                       1,218  100.0        4  text                     Q4 - 2025-2026 | Q1 - 2026-2027 | Q2 - 2026-2027
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-8 [review_8]
+    raw grid: 1,035 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 1,034 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                          1,034  100.0    1,034  numeric                  1 | 2 | 3
+      2 B    State                                         1,034  100.0       16  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                           1,034  100.0      368  text                     TAWANG | DAPORIJO | MIAO
+      4 D    Project Code                                  1,034  100.0    1,034  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-DAPORIJO-9108
+      5 E    Project Type                                  1,034  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                 1,034  100.0    1,034  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | City Multipurpose Green Park …
+        ! 27 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                 1,034  100.0      143  date                     17-04-2026 | 24-04-2026 | 25-04-2026
+      8 H    IRMA Personel                                 1,028   99.4       21  text                     Saurabh Kumar Singh | INDRA PRAKASH | VINOD KUMAR AHIRWAR
+        ! 114 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                   1,028   99.4       16  text                     Deputy Team Leader | Technical Expert | VINOD KUMAR AHIRWAR
+        ! 47 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                1,028   99.4       28  mostly numeric (3 non-n… 7007407934 | 6393933790 | 8770611580
+        ! non-numeric examples: ['70439 03718']; 4 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                        1,028   99.4       29  text                     saurabhk101@rediffmail.com | indrathetiger651@gmail.com | vinodkumarahirwar901@gmail.com
+        ! 21 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                 1,028   99.4      521  text                     Phurpa Lhamu | S C Maru | George Joseph
+        ! 111 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                         1,028   99.4      442  mostly numeric (21 non-… 9612197226 | 9436046622 | 9436635408
+        ! non-numeric examples: ['97145 94348', '+91 84878 83118', '84696 02898']; 10 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                          1,028   99.4      363  text                     udtawang@gmail.com | eeudhdaporijo@gmail.com | geomini2009@gmail.com
+        ! 19 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                       1,034  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                           1,034  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                      1,034  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                      1,034  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                    1,034  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                      1,034  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                      706   68.3        2  text                     Yes | Partially Compliant
+     22 V    Compliance Remarks                              701   67.8      174  text                     okay | complete the work and upload … | Expedite the work progress.
+        ! 12 cells contain line breaks (generator flattens them); 102 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-8                                       1,034  100.0        4  text                     Q1 - 2026-2027 | Q2 - 2026-2027 | Q4 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-9 [review_9]
+    raw grid: 869 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 868 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                            868  100.0      868  numeric                  1 | 2 | 3
+      2 B    State                                           868  100.0       13  text                     ARUNACHAL PRADESH | ASSAM | CHANDIGARH
+      3 C    ULB                                             868  100.0      289  text                     TAWANG | DAPORIJO | MIAO
+      4 D    Project Code                                    868  100.0      868  text                     AR-TAWANG-7174 | AR-TAWANG-7176 | AR-DAPORIJO-9108
+      5 E    Project Type                                    868  100.0        4  text                     Parks & Green Space Developme… | Water Body Rejuvenation | Water Supply
+      6 F    Project Title                                   868  100.0      868  text                     Construction of Parks & Green… | Rejuvenation of P.T. Tso Lake… | City Multipurpose Green Park …
+        ! 24 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                   868  100.0      102  date                     12-08-2026 | 16-07-2026 | 21-07-2026
+      8 H    IRMA Personel                                   852   98.2       17  text                     INDRA PRAKASH | AMIT KUMAR GUWAHATI | ANUP MALIK
+        ! 67 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                     851   98.0       13  text                     Technical Expert | Deputy Team Leader | Team Leader
+        ! 31 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                  851   98.0       19  mostly numeric (12 non-… 6393933790 | 9784643906 | 8145242141
+        ! non-numeric examples: ['70439 03718']; 6 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                          851   98.0       21  text                     indrathetiger651@gmail.com | amit1997riet@gmail.com | anupmalik3892@gmail.com
+        ! 27 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                   851   98.0      447  text                     Phurpa Lhamu | S C Maru | George Joseph
+        ! 107 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                           851   98.0      369  mostly numeric (18 non-… 9612197226 | 9436046622 | 9436635408
+        ! non-numeric examples: ['97145 94348', '+91 84878 83118', '84696 02898']; 22 cells have leading/trailing spaces (generator strips them)
+     14 N    State Officer E-mail                            851   98.0      297  text                     udtawang@gmail.com | eeudhdaporijo@gmail.com | geomini2009@gmail.com
+        ! 31 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                         868  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                             868  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                        868  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                        868  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                      868  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                        868  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                      417   48.0        2  text                     Yes | Partially Compliant
+     22 V    Compliance Remarks                              411   47.4       67  text                     Compliance Accepted | Compliance accepted. | Informative comment.
+        ! 6 cells contain line breaks (generator flattens them); 46 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-9                                         868  100.0        3  text                     Q2 - 2026-2027 | Q1 - 2026-2027 | Q4 - 2025-2026
+
+--- IRMA-Review-Pro-Data-Oct.xlsx :: IRMA-Reviewed-10 [review_10]
+    raw grid: 148 rows x 23 cols | header row (0-based): 0 (key-column match: 0, heuristic: 0) | data rows: 147 (+0 empty rows dropped) | named columns: 23
+      # Col  Header                                       Filled  Fill% Distinct  Type                     Samples
+      1 A    Sno.                                            147  100.0      147  numeric                  1 | 2 | 3
+      2 B    State                                           147  100.0        3  text                     ASSAM | GUJARAT | MANIPUR
+      3 C    ULB                                             147  100.0       81  text                     KOKRAJHAR | BILASIPARA (TC) | MARIGAON
+      4 D    Project Code                                    147  100.0      147  text                     AS-KOKRAJHAR-7293 | AS-BILASIPARA-11579 | AS-MARIGAON-9049
+      5 E    Project Type                                    147  100.0        4  text                     Water Supply | Water Body Rejuvenation | Parks & Green Space Developme…
+      6 F    Project Title                                   147  100.0      147  text                     Kokrajhar Town Water Supply P… | Augmentation and Expansion of… | Rejuvenation of Morikalang be…
+        ! 4 cells have leading/trailing spaces (generator strips them)
+      7 G    Date of Visit                                   147  100.0       48  date                     13-07-2026 | 28-08-2026 | 06-08-2026
+      8 H    IRMA Personel                                    97   66.0        8  text                     VINOD KUMAR AHIRWAR | Anoop kumar | Anoop kumar Guwahati
+        ! 4 cells have leading/trailing spaces (generator strips them)
+      9 I    Designation                                      97   66.0        5  text                     Deputy Team Leader | Technical Expert | Team Leader
+        ! 1 cells have leading/trailing spaces (generator strips them)
+     10 J    Contact Number                                   97   66.0        6  numeric                  8770611580 | 9918615871 | 7043903718
+        ! 1 cells have leading/trailing spaces (generator strips them)
+     11 K    E-mail                                           97   66.0        9  text                     vinodkumarahirwar901@gmail.com | anoopshah2019@gmail.com | gujarat.blg@gmail.com
+        ! 3 cells have leading/trailing spaces (generator strips them)
+     12 L    State Officer                                    97   66.0       69  text                     Deep Borah | TILAK BAISHYA | Rituraj Sarmah
+        ! 10 cells have leading/trailing spaces (generator strips them)
+     13 M    State Officer Contact                            97   66.0       57  numeric                  7002083506 | 9954176632 | 8638447903
+     14 N    State Officer E-mail                             97   66.0       55  text                     boradeep1@gmail.com | tilakbaishya@gmail.com | sarmahrituraj3@gamil.com
+        ! 3 cells have leading/trailing spaces (generator strips them)
+     15 O    Pre-Construction Status                         147  100.0        2  text                     Save As Draft | Submitted
+     16 P    Construction Status                             147  100.0        2  text                     Submitted | Save As Draft
+     17 Q    Post-Construction Status                        147  100.0        2  text                     Save As Draft | Submitted
+     18 R    IRMA Observations Status                        147  100.0        2  text                     Sent to State | Pending Sent to State
+     19 S    ATR Status                                      147  100.0        2  text                     Pending Submitted | Submitted
+     20 T    Compliance Report Status                        147  100.0        2  text                     Pending to be Submitted | Report Submitted
+     21 U    Overall Project Compliance                       41   27.9        2  text                     Yes | Partially Compliant
+     22 V    Compliance Remarks                               40   27.2       13  text                     No Comments | No Comment | Accepted.
+        ! 1 cells contain line breaks (generator flattens them); 2 cells have leading/trailing spaces (generator strips them)
+     23 W    Visit-10                                        147  100.0        2  text                     Q2 - 2026-2027 | Q1 - 2026-2027
+
+====================================================================================================
+VERDICT
+====================================================================================================
+
+  WARNINGS (11):
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Tender Details[Financial Progress (in %)]] 143 progress values outside 0-100
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Project ID]] duplicate header (generator renames 2nd+ to '<name>_2')
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Physical Progress (in %)]] 1 progress values outside 0-100
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Latitude]] 10 latitude values outside -90..90
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Longitude]] 11 longitude values outside -180..180
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Notional cost of land]] 1 numbers contain thousands separators (stored as text)
+    - [Project-Monitoring-Form-Data-Oct.xlsx::Project Details[Project ID_2]] duplicate header (generator renames 2nd+ to '<name>_2')
+    - [tenders <- Project-Monitoring-Form-Data-Oct.xlsx::Tender Details] DB column 'finance_received' matched header 'Finance Received (in CR.)' but is only 0.1% filled
+    - [reviews] 9 sheet(s) have headers that differ from 'IRMA-Reviewed-1' (details in the report file): ['IRMA-Reviewed-2', 'IRMA-Reviewed-3', 'IRMA-Reviewed-4', 'IRMA-Reviewed-5', 'IRMA-Reviewed-6', 'IRMA-Reviewed-7', 'IRMA-Reviewed-8', 'IRMA-Reviewed-9', 'IRMA-Reviewed-10']
+    - [observations] 64 code(s) not found in project_details (0 differ only by letter case)
+    - [reviews] 144 review project code(s) not in project_details
+
+  Expected rows after the build (compare with the generator's output): {'tenders': 2345, 'project_details': 1844, 'observations': 25112}
+
+  RESULT: no blocking errors, 11 warning(s) - review them, then run the generator (try --dry-run first).

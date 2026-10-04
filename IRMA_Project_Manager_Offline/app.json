@@ -3,6 +3,7 @@
     "name": "IRMA Project Manager",
     "slug": "IRMA_Project_Manager_Offline",
     "version": "2.2.3",
+    "platforms": ["android", "ios"],
     "runtimeVersion": {
       "policy": "appVersion"
     },
