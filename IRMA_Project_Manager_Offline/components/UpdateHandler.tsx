@@ -86,7 +86,7 @@ export default function UpdateHandler() {
   });
 
   return (
-    <Modal visible={step !== 'hidden'} transparent animationType="fade">
+    <Modal visible={true} transparent animationType="fade">
       <View style={styles.overlay}>
         <View style={styles.alertBox}>
           

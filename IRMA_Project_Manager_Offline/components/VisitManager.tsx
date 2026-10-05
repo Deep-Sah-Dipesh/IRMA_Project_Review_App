@@ -4,24 +4,26 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
+import { getQuarterStr, getQuarterFromYYYYMMDD, previousQuarter } from '../utils/period';
 import * as Location from 'expo-location';
 import * as Linking from 'expo-linking';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useAudioPlayer } from 'expo-audio';
-import { Audio } from 'expo-av';
+import { useAudioPlayer, useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import ViewShot from 'react-native-view-shot';
 import * as Print from 'expo-print';
 import * as Haptics from 'expo-haptics'; 
 import * as SecureStore from 'expo-secure-store'; 
 import { doc, getDoc } from 'firebase/firestore'; 
 import { Accelerometer } from 'expo-sensors'; 
-import { InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av'; 
+ 
 import * as ImageManipulator from 'expo-image-manipulator';
+import ImageViewer from 'react-native-image-zoom-viewer';
 
 import { db as firestoreDb } from '../utils/firebaseConfig';
 import { globalStyles } from '../styles/globalStyles';
+import { getActiveUserId, setDashboardDirty } from '../utils/userSession';
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyCvXa2qgN2StFVT9N9LwuF1hpK57iuIzHg";
 
@@ -51,21 +53,7 @@ const formatGeoDate = (d: Date) => {
 const ZOOM_STEPS = [0, 0.15, 0.3, 0.5, 0.75, 1.0];
 const ZOOM_LABELS = ['1x', '1.5x', '2x', '3x', '4x', '5x'];
 
-const getActiveUserId = async () => {
-  try {
-    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-    if (sessionStr) {
-      const parsedSession = JSON.parse(sessionStr);
-      let uId = parsedSession.userId;
-      try {
-        const userSnap = await getDoc(doc(firestoreDb, 'users', uId));
-        if (userSnap.exists() && userSnap.data().uniqueUserId) uId = userSnap.data().uniqueUserId;
-      } catch (e) { console.warn(e); }
-      return uId;
-    }
-  } catch(e) { console.warn(e); }
-  return 'AnonymousUser';
-};
+
 
 export default function VisitManager({ projectId, tenderId, folderName, onEdit }: VisitManagerProps) {
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = useWindowDimensions();
@@ -85,6 +73,12 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const [sortBy, setSortBy] = useState<'Date' | 'Name'>('Date');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [isGridView, setIsGridView] = useState<boolean>(true); // View Toggle State
+  const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+
+  // Previous Trimester Media
+  const [prevTrimesterMedia, setPrevTrimesterMedia] = useState<any[]>([]);
+  const [prevTrimesterName, setPrevTrimesterName] = useState<string | null>(null);
  
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [previewFileContent, setPreviewFileContent] = useState<string | null>(null);
@@ -102,7 +96,8 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   const [reviewParams, setReviewParams] = useState({ quality: 'Not Evaluated', timeLimit: 'On Schedule', output: 'Standard' });
   const [existingReviewPath, setExistingReviewPath] = useState<string | null>(null);
  
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [isRecordingState, setIsRecordingState] = useState(false);
   const [recordTime, setRecordTime] = useState(0);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
 
@@ -115,7 +110,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
  
   const [showZoom, setShowZoom] = useState(false);
   const [zoomIndex, setZoomIndex] = useState(0); 
-  const zoomTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const zoomTimeoutRef = useRef<any>(null);
   const lastZoomTap = useRef<number>(0);
   const lastImageTap = useRef<number>(0);
   const [isCapturing, setIsCapturing] = useState(false);
@@ -171,19 +166,16 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   useEffect(() => { if (activeVisit) updateFileStats(); }, [activeVisit]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (recording && !isRecordingPaused) {
-      interval = setInterval(async () => {
-        try {
-          const status = await recording.getStatusAsync();
-          if (status.isRecording) setRecordTime(Math.floor(status.durationMillis / 1000));
-        } catch(e) {}
-      }, 500);
+    let interval: any;
+    if (isRecordingState && !isRecordingPaused) {
+      interval = setInterval(() => {
+        setRecordTime(prev => prev + 1);
+      }, 1000);
     }
     return () => clearInterval(interval);
-  }, [recording, isRecordingPaused]);
+  }, [isRecordingState, isRecordingPaused]);
 
-  useEffect(() => { return () => { if (recording) recording.stopAndUnloadAsync().catch(() => {}); }; }, [recording]);
+
 
   const extractCleanAddress = (addr: any) => {
     const street = addr.street || addr.name || '';
@@ -223,7 +215,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
   }, []);
 
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
+    let intervalId: any;
     if (showLiveCamera) {
       const forceFetchLocation = async () => {
         try {
@@ -265,7 +257,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
              const p = (n: number) => n.toString().padStart(2, '0');
              const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
              await FileSystem.copyAsync({ from: stampedUri, to: `${targetDir}Img_Geo_${dtStr}.jpg` });
-             updateFileStats();
+             updateFileStats(true);
           }
         } catch (e) {} finally {
           setCaptureQueue(q => q.slice(1));
@@ -315,25 +307,85 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         const visitDirs = files.filter(f => f.startsWith('VISIT_')).sort();
         setVisits(visitDirs);
         if (visitDirs.length > 0) setActiveVisit(visitDirs[visitDirs.length - 1]);
+        
+        // Scan for previous trimester media
+        const prev = previousQuarter();
+        const prevTrimester = `${prev.year}-Q${prev.q}`;
+        const prevToPrev = previousQuarter(prev.q, prev.year);
+        const prevToPrevTrimester = `${prevToPrev.year}-Q${prevToPrev.q}`;
+        
+        let foundPrev: string | null = null;
+        let foundTrimStr = prevTrimester;
+
+        for (let i = visitDirs.length - 1; i >= 0; i--) {
+            const v = visitDirs[i];
+            const match = v.match(/_(\d{8})_/);
+            if (match && getQuarterFromYYYYMMDD(match[1]) === prevTrimester) {
+                foundPrev = v;
+                foundTrimStr = prevTrimester;
+                break;
+            }
+        }
+
+        if (!foundPrev) {
+            for (let i = visitDirs.length - 1; i >= 0; i--) {
+                const v = visitDirs[i];
+                const match = v.match(/_(\d{8})_/);
+                if (match && getQuarterFromYYYYMMDD(match[1]) === prevToPrevTrimester) {
+                    foundPrev = v;
+                    foundTrimStr = prevToPrevTrimester;
+                    break;
+                }
+            }
+        }
+        
+        if (foundPrev) {
+            const match = foundPrev.match(/_(\d{8})_/);
+            let dateFormatted = foundPrev;
+            if (match && match[1].length === 8) {
+               const d = match[1];
+               dateFormatted = `${d.substring(6, 8)}-${d.substring(4, 6)}-${d.substring(0, 4)}`;
+            }
+            const qPart = foundTrimStr.split('-')[1] || foundTrimStr;
+            setPrevTrimesterName(`Last Visit (${dateFormatted}) [${qPart}]`);
+            let prevMedia: any[] = [];
+            const mediaFolders = ['Images', 'Geotag Captures'];
+            for (const f of mediaFolders) {
+                const path = `${baseUri}${foundPrev}/${f}`;
+                const info = await FileSystem.getInfoAsync(path);
+                if (info.exists) {
+                    const items = await FileSystem.readDirectoryAsync(path);
+                    for (const item of items) {
+                        if (getFileType(item) === 'image') {
+                            prevMedia.push({ name: item, folder: f, uri: `${path}/${item}` });
+                        }
+                    }
+                }
+            }
+            setPrevTrimesterMedia(prevMedia);
+        } else {
+            setPrevTrimesterMedia([]);
+            setPrevTrimesterName(null);
+        }
       }
     } catch (e) {}
   };
 
-  const getTodayYYYYMMDD = () => {
-      const d = new Date();
-      const p = (n: number) => n.toString().padStart(2, '0');
-      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  const getPrevQuarterStr = () => {
+    const prev = previousQuarter();
+    return `${prev.year}-Q${prev.q}`;
   };
 
+
   const checkAndCreateVisit = async () => {
-    const todayStr = getTodayYYYYMMDD();
+    const currentQuarterStr = getQuarterStr();
     if (visits.length > 0) {
         const latest = visits[visits.length - 1];
         const match = latest.match(/_(\d{8})_/);
         if (match) {
             const lastDateStr = match[1];
-            if (lastDateStr === todayStr) {
-                Alert.alert("Visit Limit Reached", "You've already created a visit report today.");
+            if (getQuarterFromYYYYMMDD(lastDateStr) === getQuarterStr()) {
+                Alert.alert("Visit Limit Reached", "You've already created a visit report for the current quarter. Only one visit is allowed per quarter.");
                 return;
             }
         }
@@ -357,6 +409,9 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       setVisits(newVisits);
       setActiveVisit(newVisitName);
       
+      // Mark dashboard dirty so it re-scans when navigated back to
+      setDashboardDirty(true);
+      
       setTimeout(() => { handlePinGeotag(true, true, newVisitName); }, 5000);
     } catch (e) {}
   };
@@ -370,7 +425,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
     return folderUri;
   };
 
-  const updateFileStats = async () => {
+  const updateFileStats = async (isMutation = false) => {
     try {
       const visitUri = `${getBaseDirectory()}${activeVisit}/`;
       const checkFolders = ['Notes', 'Comments', 'Attachments', 'Geotag Captures', 'Location Pins', 'Documents', 'Normal Captures'];
@@ -402,8 +457,14 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         }
       }
       setFileStats(stats);
-      if (stats.total > 0 && onEdit) onEdit();
+      if (stats.total > 0 && isMutation && onEdit) onEdit();
     } catch (e) {}
+  };
+
+  const getTodayYYYYMMDD = () => {
+    const d = new Date();
+    const p = (n: number) => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
   };
 
   const handleOpenReview = async () => {
@@ -460,30 +521,26 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
 
   const startRecording = async () => {
     try {
-      const perm = await Audio.requestPermissionsAsync();
+      const perm = await requestRecordingPermissionsAsync();
       if (perm.status !== 'granted') return Alert.alert("Permission Denied");
 
-      await Audio.setAudioModeAsync({ 
-          allowsRecordingIOS: true, 
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          shouldRouteThroughEarpieceIOS: false,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          playThroughEarpieceAndroid: false,
+      await setAudioModeAsync({ 
+          allowsRecording: true, 
+          playsInSilentMode: true,
       });
 
-      const { recording: newRecording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      setRecordTime(0); setIsRecordingPaused(false); setRecording(newRecording);
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      setRecordTime(0); setIsRecordingPaused(false); setIsRecordingState(true);
     } catch (err) {}
   };
 
   const stopRecording = async () => {
-    if (!recording) return;
+    if (!isRecordingState) return;
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(null); setRecordTime(0); setIsRecordingPaused(false);
+      await audioRecorder.stop();
+      const uri = audioRecorder.uri;
+      setIsRecordingState(false); setRecordTime(0); setIsRecordingPaused(false);
       if (uri) {
         const targetDir = await ensureSubfolder('Notes');
         const d = new Date();
@@ -491,9 +548,38 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
         const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
         const num = fileStats.audio + 1;
         await FileSystem.copyAsync({ from: uri, to: `${targetDir}Voice_Memo_${num}_${dtStr}.m4a` });
-        updateFileStats();
+        updateFileStats(true);
       }
     } catch (err) {}
+  };
+
+  const renderRecordingUI = (isFloating: boolean = false) => {
+    if (!isRecordingState) return null;
+    return (
+      <View style={[styles.recordingUIBox, isFloating && { position: 'absolute', bottom: 40, left: 20, right: 20, zIndex: 9999, elevation: 100, backgroundColor: '#FFF', shadowColor: '#000', shadowOffset: {width:0, height:4}, shadowOpacity: 0.15, shadowRadius: 10 }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View style={styles.redDot} />
+          <Text style={styles.recordingTime}>{formatTime(recordTime)}</Text>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+           <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#EFF6FF', marginRight: 10 }]} onPress={() => {
+              if (isRecordingPaused) {
+                 audioRecorder.record();
+                 setIsRecordingPaused(false);
+              } else {
+                 audioRecorder.pause();
+                 setIsRecordingPaused(true);
+              }
+           }}>
+              <Ionicons name={isRecordingPaused ? "play" : "pause"} size={20} color="#2563EB" />
+           </TouchableOpacity>
+           <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#FEE2E2' }]} onPress={stopRecording}>
+             <Ionicons name="square" size={20} color="#EF4444" />
+             <Text style={{color: '#EF4444', fontWeight: 'bold', marginLeft: 6}}>Stop & Save</Text>
+           </TouchableOpacity>
+        </View>
+      </View>
+    );
   };
 
   const injectMarkdown = (type: 'bullet' | 'number' | 'roman') => {
@@ -535,7 +621,7 @@ export default function VisitManager({ projectId, tenderId, folderName, onEdit }
       const num = commentFilesCount + 1;
 
       await FileSystem.writeAsStringAsync(`${targetDir}Comments_${num}_${dtStr}.txt`, commentText);
-      setCommentText(''); setShowCommentModal(false); updateFileStats();
+      setCommentText(''); setShowCommentModal(false); updateFileStats(true);
     } catch (e) {}
   };
 
@@ -576,7 +662,7 @@ Generated by Project Manager`;
       
       setShowReviewModal(false);
       setExistingReviewPath(null);
-      updateFileStats();
+      updateFileStats(true);
     } catch (err) {
       Alert.alert("Error", "Could not save the field report.");
     }
@@ -584,14 +670,18 @@ Generated by Project Manager`;
 
   const handleAttachFile = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: false, multiple: true });
+      const result = await DocumentPicker.getDocumentAsync({ 
+          type: ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'], 
+          copyToCacheDirectory: false, 
+          multiple: true 
+      });
       if (result.canceled || !result.assets?.length) return;
       const targetDir = await ensureSubfolder('Attachments');
       for (const asset of result.assets) {
          const cleanName = asset.name.replace(/[^a-zA-Z0-9.-]/g, '_');
          await FileSystem.copyAsync({ from: asset.uri, to: `${targetDir}${cleanName}` });
       }
-      updateFileStats();
+      updateFileStats(true);
     } catch (e) {}
   };
 
@@ -730,7 +820,7 @@ Generated by Project Manager`;
       
       await FileSystem.copyAsync({ from: uri, to: `${targetDir}Scanned_Document_${dtStr}.pdf` });
       
-      updateFileStats();
+      updateFileStats(true);
       setShowLiveCamera(false);
     } catch(e) {
       Alert.alert("PDF Generation Failed", "Could not compile the scanned images into a document. Try scanning fewer pages at once.");
@@ -761,8 +851,7 @@ Generated by Project Manager`;
     try {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: mediaType === 'video' ? ['videos'] : ['images'],
-        allowsEditing: false, 
-        videoQuality: 0.9, 
+        allowsEditing: false,
         quality: 0.85 
       });
       if (result.canceled || !result.assets?.length) return;
@@ -775,7 +864,7 @@ Generated by Project Manager`;
       const dtStr = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
       
       await FileSystem.copyAsync({ from: result.assets[0].uri, to: `${targetDir}${prefix}${dtStr}.${ext}` });
-      updateFileStats();
+      updateFileStats(true);
     } catch (e) {}
   };
 
@@ -801,7 +890,7 @@ Generated by Project Manager`;
         
         const kmlData = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Placemark>\n    <name>Project Geotag</name>\n    <Point>\n      <coordinates>${lon},${lat},0</coordinates>\n    </Point>\n  </Placemark>\n</kml>`;
         await FileSystem.writeAsStringAsync(`${targetDir}pin_${projectId}_${tenderId}_${lat}_${lon}.kml`, kmlData);
-        updateFileStats();
+        updateFileStats(true);
       } catch (err) {
         if (!silent) Alert.alert("Error", "Could not fetch GPS.");
       }
@@ -843,7 +932,7 @@ Generated by Project Manager`;
           for(const f of files) {
              if(!f.endsWith('.json')) {
                 const fileStat = await FileSystem.getInfoAsync(`${subUri}${f}`);
-                if (!fileStat.isDirectory) {
+                if (fileStat.exists && !fileStat.isDirectory) {
                   allFiles.push({ name: f, folder, time: fileStat.modificationTime || 0, size: fileStat.size || 0, uri: `${subUri}${f}` });
                   totalSize += fileStat.size || 0;
                 }
@@ -890,7 +979,7 @@ Generated by Project Manager`;
                const jsonUri = `${getBaseDirectory()}${activeVisit}/${folder}/${baseName}.json`;
                await FileSystem.deleteAsync(jsonUri, { idempotent: true }).catch(()=>{});
             }
-            await refreshFilesExplorer(); updateFileStats();
+            await refreshFilesExplorer(); updateFileStats(true);
           } catch (e) {}
         }}
     ]);
@@ -973,7 +1062,10 @@ Generated by Project Manager`;
   return (
     <View style={[globalStyles.card, { padding: 16, marginBottom: 10, paddingBottom: 16 }]}>
       <View style={{ marginBottom: 15 }}>
-         <Text style={styles.visitSectionHeader}>Manage your visit reports here</Text>
+         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, marginBottom: 15, borderWidth: 1, borderColor: '#BFDBFE' }}>
+           <Ionicons name="folder-open" size={20} color="#2563EB" style={{ marginRight: 8 }} />
+           <Text style={{ color: '#1E3A8A', fontWeight: '900', fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.5 }}>Visit Reports</Text>
+         </View>
          <View style={styles.visitControls}>
            <TouchableOpacity style={styles.visitBtnLight} onPress={() => setShowVisitModal(true)}>
              <Ionicons name="list" size={16} color="#334155" style={{ marginRight: 6 }} /><Text style={{ color: '#334155', fontWeight: 'bold', fontSize: 13 }}>Select From Visits</Text>
@@ -984,6 +1076,27 @@ Generated by Project Manager`;
          </View>
       </View>
 
+      {prevTrimesterMedia.length > 0 && (
+        <View style={{ marginBottom: 20 }}>
+          <Text style={[styles.visitSectionHeader, { textAlign: 'left', marginBottom: 8, color: '#2563EB' }]}>{prevTrimesterName}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 5, gap: 10 }}>
+            {prevTrimesterMedia.map((m, i) => (
+              <TouchableOpacity key={i} onPress={async () => {
+                  try {
+                      const IntentLauncher = require('expo-intent-launcher');
+                      const cUri = await FileSystem.getContentUriAsync(m.uri);
+                      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: cUri, flags: 1, type: 'image/*' });
+                  } catch(e) {
+                      await Sharing.shareAsync(m.uri);
+                  }
+              }}>
+                <Image source={{ uri: m.uri }} style={{ width: 80, height: 80, borderRadius: 8, backgroundColor: '#E2E8F0', borderWidth: 1, borderColor: '#CBD5E1' }} />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       {activeVisit ? (
         <View>
           <View style={styles.activeVisitBox}>
@@ -993,39 +1106,10 @@ Generated by Project Manager`;
               <Text style={styles.activeVisitText} numberOfLines={1}>{activeVisit}</Text>
             </View>
           </View>
-          {fileStats.total > 0 && (
-            <View style={[styles.statsContainer, { alignItems: 'center' }]}>
-              <Text style={styles.statsTitle}>Saved Files: {fileStats.total}</Text>
-              <View style={styles.statsRow}>
-                {Object.entries(fileStats).map(([key, count]) => {
-                  if (key === 'total' || count === 0) return null;
-                  return <View key={key} style={styles.statBadge}><Text style={styles.statBadgeText}>{count} {key.replace('_', ' ')}</Text></View>;
-                })}
-              </View>
-            </View>
-          )}
         </View>
       ) : <Text style={styles.noVisitText}>Select or Create a visit report session to unlock media buttons.</Text>}
 
-      {recording && (
-        <View style={styles.recordingUIBox}>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <View style={styles.redDot} />
-            <Text style={styles.recordingTime}>{formatTime(recordTime)}</Text>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#EFF6FF', marginRight: 10 }]} onPress={() => {
-                isRecordingPaused ? recording.startAsync().then(() => setIsRecordingPaused(false)) : recording.pauseAsync().then(() => setIsRecordingPaused(true));
-             }}>
-                <Ionicons name={isRecordingPaused ? "play" : "pause"} size={20} color="#2563EB" />
-             </TouchableOpacity>
-             <TouchableOpacity style={[styles.recordControlBtn, { backgroundColor: '#FEE2E2' }]} onPress={stopRecording}>
-               <Ionicons name="square" size={20} color="#EF4444" />
-               <Text style={{color: '#EF4444', fontWeight: 'bold', marginLeft: 6}}>Stop & Save</Text>
-             </TouchableOpacity>
-          </View>
-        </View>
-      )}
+      {renderRecordingUI()}
 
       {activeVisit && (
         <TouchableOpacity 
@@ -1041,17 +1125,17 @@ Generated by Project Manager`;
       <View style={[!activeVisit && { opacity: 0.3 }]} pointerEvents={!activeVisit ? 'none' : 'auto'}>
         {/* ROW 1 */}
         <View style={styles.actionRow}>
-          <ActionButton icon={recording ? "stop-circle" : "mic"} label={recording ? "Recording..." : "Voice Note"} color={recording ? "#EF4444" : "#EA580C"} onPress={() => recording ? stopRecording() : startRecording()} />
+          <ActionButton icon={isRecordingState ? "stop-circle" : "mic"} label={isRecordingState ? "Recording..." : "Voice Note"} color={isRecordingState ? "#EF4444" : "#EA580C"} onPress={() => isRecordingState ? stopRecording() : startRecording()} />
           <ActionButton icon="chatbubble-ellipses" label="Text Comment" color="#059669" onPress={() => setShowCommentModal(true)} />
-          <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={() => handlePinGeotag(false)} disabled={recording !== null} />
+          <ActionButton icon="location" label="Pin Geotag" color="#0891B2" onPress={() => handlePinGeotag(false)} disabled={isRecordingState} />
         </View>
 
         {/* ROW 2 */}
         <View style={styles.actionRow}>
-          {/* <ActionButton icon="camera-outline" label="Normal Photo" color="#2563EB" onPress={() => handleCaptureNormalMedia('photo')} disabled={recording !== null} /> */}
-          <ActionButton icon="videocam-outline" label="Normal Video" color="#DB2777" onPress={() => handleCaptureNormalMedia('video')} disabled={recording !== null} />
-          <ActionButton icon="camera-outline" label="Geotag Photo" color="#0284C7" onPress={() => openLiveCamera(false)} disabled={recording !== null} />
-          <ActionButton icon="document-text" label="Scan Document" color="#CA8A04" onPress={() => openLiveCamera(true)} disabled={recording !== null} />
+          {/* <ActionButton icon="camera-outline" label="Normal Photo" color="#2563EB" onPress={() => handleCaptureNormalMedia('photo')} disabled={isRecordingState} /> */}
+          <ActionButton icon="videocam-outline" label="Normal Video" color="#DB2777" onPress={() => handleCaptureNormalMedia('video')} disabled={isRecordingState} />
+          <ActionButton icon="camera-outline" label="Geotag Photo" color="#0284C7" onPress={() => openLiveCamera(false)} disabled={isRecordingState} />
+          <ActionButton icon="document-text" label="Scan Document" color="#CA8A04" onPress={() => openLiveCamera(true)} disabled={isRecordingState} />
         </View>
 
         {/* ROW 3: Center Aligned */}
@@ -1061,9 +1145,22 @@ Generated by Project Manager`;
         </View>
       </View>
 
+      {activeVisit && fileStats.total > 0 && (
+        <View style={[styles.statsContainer, { alignItems: 'center', marginTop: 15 }]}>
+          <Text style={styles.statsTitle}>Saved Files: {fileStats.total}</Text>
+          <View style={styles.statsRow}>
+            {Object.entries(fileStats).map(([key, count]) => {
+              if (key === 'total' || count === 0) return null;
+              return <View key={key} style={styles.statBadge}><Text style={styles.statBadgeText}>{count} {key.replace('_', ' ')}</Text></View>;
+            })}
+          </View>
+        </View>
+      )}
+
       {/* UPDATED: onRequestClose added to all Modals to intercept Android Hardware Back Button */}
       <Modal visible={showLiveCamera} transparent animationType="none" onRequestClose={handleCloseLiveCamera}>
          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' }}>
+            {renderRecordingUI(true)}
             
             {captureQueue.length > 0 && (
               <View style={{ position: 'absolute', top: 0, left: 0, zIndex: -1, elevation: -1, opacity: 0.01 }} pointerEvents="none" collapsable={false}>
@@ -1078,8 +1175,8 @@ Generated by Project Manager`;
                    const scaleRatio = shotW / Math.min(SCREEN_WIDTH, SCREEN_HEIGHT);
 
                    return (
-                      <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: shotW, height: shotH, backgroundColor: '#000' }} collapsable={false}>
-                        <Image source={{ uri: item.uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} collapsable={false} />
+                      <ViewShot ref={viewShotRef} options={{ format: 'jpg', quality: 0.9 }} style={{ width: shotW, height: shotH, backgroundColor: '#000' }}>
+                        <Image source={{ uri: item.uri }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} onLoad={() => setCaptureTrigger(Date.now())} />
                         
                         <View style={{ position: 'absolute', bottom: 4 * scaleRatio, left: 0, right: 0, alignItems: 'center' }} collapsable={false}>
                            <GPSCameraOverlay geoData={item.geoData} sizeRatio={scaleRatio} isLandscape={isLandscape} />
@@ -1191,6 +1288,7 @@ Generated by Project Manager`;
       <Modal visible={showVisitModal} transparent animationType="fade" onRequestClose={() => setShowVisitModal(false)}>
         <TouchableWithoutFeedback onPress={() => setShowVisitModal(false)}>
           <View style={styles.modalOverlay}>
+            {renderRecordingUI(true)}
             <View style={[styles.modalContent, { maxHeight: '60%' }]}>
               <View style={styles.modalHeader}>
                  <Text style={styles.modalTitle}>Select Visit Session</Text>
@@ -1212,6 +1310,7 @@ Generated by Project Manager`;
 
       <Modal visible={showReviewModal} transparent animationType="slide" onRequestClose={() => setShowReviewModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F8FAFC' }]}>
+          {renderRecordingUI(true)}
           <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}>
             <View style={[styles.modalContent, { paddingBottom: 30, backgroundColor: '#F8FAFC', paddingTop: 20 }]}>
               <View style={styles.modalHeader}>
@@ -1271,6 +1370,7 @@ Generated by Project Manager`;
 
       <Modal visible={showCommentModal} transparent animationType="slide" onRequestClose={() => setShowCommentModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.modalOverlay, { backgroundColor: '#F1F5F9' }]}>
+          {renderRecordingUI(true)}
           <View style={[styles.modalContent, { paddingBottom: 30, backgroundColor: '#F1F5F9', borderTopLeftRadius: 0, borderTopRightRadius: 0, paddingTop: 40 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Text Comment</Text>
@@ -1294,17 +1394,50 @@ Generated by Project Manager`;
       <Modal visible={showFilesModal} transparent animationType="fade" onRequestClose={() => setShowFilesModal(false)}>
         <TouchableWithoutFeedback onPress={() => setShowFilesModal(false)}>
           <View style={styles.modalOverlay}>
+            {renderRecordingUI(true)}
             <TouchableWithoutFeedback>
               <View style={[styles.modalContent, { maxHeight: '85%' }]}>
                 <View style={styles.modalHeader}>
-                  <Text style={[styles.modalTitle, {flex: 1}]} numberOfLines={1}>Files in Session ({formatBytes(totalSessionSize)})</Text>
+                  <Text style={[styles.modalTitle, {flex: 1}]} numberOfLines={1}>{isSelectionMode ? `${selectedFiles.size} Selected` : `Files (${formatBytes(totalSessionSize)})`}</Text>
                   <View style={{flexDirection: 'row', alignItems: 'center'}}>
-                    <TouchableOpacity onPress={() => setIsGridView(!isGridView)} style={{marginRight: 15, padding: 4}}>
-                      <Ionicons name={isGridView ? 'list' : 'grid'} size={24} color="#2563EB" />
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowFilesModal(false)} style={{padding: 4}}>
-                      <Ionicons name="close" size={24} color="#64748B" />
-                    </TouchableOpacity>
+                    {isSelectionMode ? (
+                        <>
+                           <TouchableOpacity onPress={async () => {
+                               if (selectedFiles.size === 0) return;
+                               const urls = Array.from(selectedFiles);
+                               if (urls.length === 1) {
+                                  await Sharing.shareAsync(urls[0]);
+                               } else {
+                                  // Multiple share - iOS supports this natively with urls array. Android may require a zipped bundle or multiple calls depending on library limits. Expo sharing usually supports single URL.
+                                  // To support multiple, we might need to share one by one or create a zip. But for simplicity let's try sharing the first or alerting.
+                                  if (Platform.OS === 'ios') {
+                                       await Sharing.shareAsync(urls[0]); // Actually expo-sharing only supports single file. Let's just share the first or alert if >1. 
+                                  } else {
+                                      Alert.alert("Notice", "Multiple file sharing is restricted by OS. Sharing first selected file.", [
+                                          { text: "OK", onPress: () => Sharing.shareAsync(urls[0]) }
+                                      ]);
+                                  }
+                               }
+                           }} style={{marginRight: 15, padding: 4}}>
+                               <Ionicons name="share-social" size={24} color="#2563EB" />
+                           </TouchableOpacity>
+                           <TouchableOpacity onPress={() => setIsSelectionMode(false)} style={{marginRight: 15, padding: 4}}>
+                               <Ionicons name="close-circle" size={24} color="#EF4444" />
+                           </TouchableOpacity>
+                        </>
+                    ) : (
+                        <>
+                            <TouchableOpacity onPress={() => { setIsSelectionMode(true); setSelectedFiles(new Set()); }} style={{marginRight: 15, padding: 4}}>
+                                <Ionicons name="checkbox-outline" size={24} color="#2563EB" />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => setIsGridView(!isGridView)} style={{marginRight: 15, padding: 4}}>
+                                <Ionicons name={isGridView ? 'list' : 'grid'} size={24} color="#2563EB" />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => setShowFilesModal(false)} style={{padding: 4}}>
+                                <Ionicons name="close" size={24} color="#64748B" />
+                            </TouchableOpacity>
+                        </>
+                    )}
                   </View>
                 </View>
                 <View style={styles.filterControls}>
@@ -1337,34 +1470,78 @@ Generated by Project Manager`;
                     if (isGridView) {
                       return (
                         <View style={[styles.gridCardContainer, { width: (SCREEN_WIDTH - 60) / 2 }]}>
+                          <TouchableOpacity style={[styles.gridDeleteBtn, { right: 38, backgroundColor: 'rgba(255,255,255,0.9)' }]} onPress={() => Sharing.shareAsync(item.uri)}>
+                            <Ionicons name="share-social" size={18} color="#2563EB" />
+                          </TouchableOpacity>
                           <TouchableOpacity style={styles.gridDeleteBtn} onPress={() => deleteFile(item.folder, item.name)}>
                             <Ionicons name="trash-outline" size={18} color="#EF4444" />
                           </TouchableOpacity>
+                          
+                          {isSelectionMode && (
+                             <TouchableOpacity style={{ position: 'absolute', top: 6, left: 6, zIndex: 10 }} onPress={() => {
+                                 const next = new Set(selectedFiles);
+                                 if (next.has(item.uri)) next.delete(item.uri); else next.add(item.uri);
+                                 setSelectedFiles(next);
+                             }}>
+                                 <Ionicons name={selectedFiles.has(item.uri) ? "checkbox" : "square-outline"} size={22} color={selectedFiles.has(item.uri) ? "#2563EB" : "#FFF"} style={{ backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 11 }} />
+                             </TouchableOpacity>
+                          )}
 
-                          <TouchableOpacity style={styles.gridIconContainer} onPress={() => triggerPreview(index)}>
-                            {isImage ? (
-                              <Image source={{ uri: item.uri }} style={styles.gridThumbnail} />
-                            ) : isVideo ? (
-                              <View style={styles.gridThumbnailPlaceholder}>
-                                <Ionicons name="videocam" size={32} color="#FFF" />
-                              </View>
-                            ) : (
-                              <Ionicons name={type === 'kml' ? 'map' : type === 'audio' ? 'musical-notes' : 'document-text'} size={36} color="#3B82F6" />
-                            )}
+                          <TouchableOpacity 
+                            style={{ flex: 1, width: '100%' }}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              if (isSelectionMode) {
+                                  const next = new Set(selectedFiles);
+                                  if (next.has(item.uri)) next.delete(item.uri); else next.add(item.uri);
+                                  setSelectedFiles(next);
+                              } else {
+                                  triggerPreview(index);
+                              }
+                            }}
+                          >
+                            <View style={styles.gridIconContainer}>
+                              {isImage ? (
+                                <Image source={{ uri: item.uri }} style={[styles.gridThumbnail, selectedFiles.has(item.uri) && { opacity: 0.7 }]} />
+                              ) : isVideo ? (
+                                <View style={styles.gridThumbnailPlaceholder}>
+                                  <Ionicons name="videocam" size={32} color="#FFF" />
+                                </View>
+                              ) : (
+                                <Ionicons name={type === 'kml' ? 'map' : type === 'audio' ? 'musical-notes' : 'document-text'} size={36} color="#3B82F6" />
+                              )}
+                            </View>
+
+                            <View style={styles.gridInfoContainer}>
+                              <Text numberOfLines={1} style={styles.gridFileName}>{item.name}</Text>
+                              <Text numberOfLines={1} style={styles.gridFolderName}>/{item.folder}</Text>
+                              <Text style={styles.gridFileSize}>{formatBytes(item.size)}</Text>
+                            </View>
                           </TouchableOpacity>
-
-                          <View style={styles.gridInfoContainer}>
-                            <Text numberOfLines={1} style={styles.gridFileName}>{item.name}</Text>
-                            <Text numberOfLines={1} style={styles.gridFolderName}>/{item.folder}</Text>
-                            <Text style={styles.gridFileSize}>{formatBytes(item.size)}</Text>
-                          </View>
                         </View>
                       );
                     }
 
                     return (
                       <View style={styles.fileItemRow}>
-                        <TouchableOpacity style={styles.fileItemContent} onPress={() => triggerPreview(index)}>
+                        {isSelectionMode && (
+                           <TouchableOpacity style={{ marginRight: 15 }} onPress={() => {
+                               const next = new Set(selectedFiles);
+                               if (next.has(item.uri)) next.delete(item.uri); else next.add(item.uri);
+                               setSelectedFiles(next);
+                           }}>
+                               <Ionicons name={selectedFiles.has(item.uri) ? "checkbox" : "square-outline"} size={24} color={selectedFiles.has(item.uri) ? "#2563EB" : "#94A3B8"} />
+                           </TouchableOpacity>
+                        )}
+                        <TouchableOpacity style={styles.fileItemContent} onPress={() => {
+                              if (isSelectionMode) {
+                                  const next = new Set(selectedFiles);
+                                  if (next.has(item.uri)) next.delete(item.uri); else next.add(item.uri);
+                                  setSelectedFiles(next);
+                              } else {
+                                  triggerPreview(index);
+                              }
+                        }}>
                           {isImage ? (
                             <Image source={{ uri: item.uri }} style={styles.listThumbnail} />
                           ) : isVideo ? (
@@ -1380,9 +1557,14 @@ Generated by Project Manager`;
                           </View>
                           <Text style={styles.fileItemSize}>{formatBytes(item.size)}</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity onPress={() => deleteFile(item.folder, item.name)} style={styles.deleteFileBtn}>
-                          <Ionicons name="trash" size={20} color="#EF4444" />
-                        </TouchableOpacity>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <TouchableOpacity onPress={() => Sharing.shareAsync(item.uri)} style={[styles.deleteFileBtn, { backgroundColor: '#EFF6FF', marginRight: 8 }]}>
+                            <Ionicons name="share-social" size={20} color="#2563EB" />
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => deleteFile(item.folder, item.name)} style={styles.deleteFileBtn}>
+                            <Ionicons name="trash" size={20} color="#EF4444" />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     );
                   }}
@@ -1396,10 +1578,26 @@ Generated by Project Manager`;
 
       <Modal visible={previewIndex !== null} transparent animationType="slide" onRequestClose={() => setPreviewIndex(null)}>
         <View style={styles.previewOverlay}>
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle} numberOfLines={1}>{currentPreviewFile?.name}</Text>
-            <TouchableOpacity onPress={() => setPreviewIndex(null)} style={{ padding: 5 }}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
-          </View>
+          {renderRecordingUI(true)}
+          {currentPreviewType !== 'image' && (
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTitle} numberOfLines={1}>{currentPreviewFile?.name}</Text>
+              {currentPreviewFile && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <TouchableOpacity onPress={async () => {
+                          try {
+                              await Sharing.shareAsync(currentPreviewFile.uri);
+                          } catch(e) {}
+                      }} style={{ padding: 5, marginRight: 15 }}><Ionicons name="share-social" size={24} color="#FFF" /></TouchableOpacity>
+                      <TouchableOpacity onPress={() => {
+                          deleteFile(currentPreviewFile.folder, currentPreviewFile.name);
+                          setPreviewIndex(null);
+                      }} style={{ padding: 5, marginRight: 15 }}><Ionicons name="trash" size={24} color="#EF4444" /></TouchableOpacity>
+                  </View>
+              )}
+              <TouchableOpacity onPress={() => setPreviewIndex(null)} style={{ padding: 5 }}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
+            </View>
+          )}
           
           <View style={styles.previewContainer}>
             {prevMediaIdx !== null && imagePreviewZoom === 1 && (
@@ -1410,14 +1608,38 @@ Generated by Project Manager`;
 
             {currentPreviewType === 'text' && <ScrollView style={styles.previewTextWrapper}><Text style={styles.previewText}>{previewFileContent}</Text></ScrollView>}
             
-            {currentPreviewType === 'image' && (
-              <View style={{ flex: 1, width: '100%', height: '100%', backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
-                 <Image 
-                     source={{ uri: currentPreviewFile?.uri }} 
-                     style={{ width: '100%', height: '100%', resizeMode: 'contain' }} 
-                 />
-              </View>
-            )}
+            {currentPreviewType === 'image' && (() => {
+               const images = displayFiles.filter(f => getFileType(f.name) === 'image');
+               const startIdx = Math.max(0, images.findIndex(f => f.uri === currentPreviewFile?.uri));
+               return (
+                 <View style={{ flex: 1, width: '100%', height: '100%', backgroundColor: '#000' }}>
+                   <ImageViewer 
+                       imageUrls={images.map(img => ({ url: img.uri }))}
+                       index={startIdx}
+                       enableSwipeDown
+                       onSwipeDown={() => setPreviewIndex(null)}
+                       renderHeader={(currIdx) => (
+                           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, paddingTop: 50, zIndex: 100, backgroundColor: 'rgba(0,0,0,0.5)' }}>
+                               <Text style={{ color: '#FFF', fontSize: 16, fontWeight: 'bold', flex: 1, marginRight: 15 }} numberOfLines={1}>{images[currIdx || 0]?.name}</Text>
+                               <TouchableOpacity onPress={async () => {
+                                   try {
+                                       await Sharing.shareAsync(images[currIdx || 0].uri);
+                                   } catch(e) {}
+                               }} style={{ padding: 5, marginRight: 15 }}><Ionicons name="share-social" size={24} color="#FFF" /></TouchableOpacity>
+                               <TouchableOpacity onPress={() => {
+                                   const img = images[currIdx || 0];
+                                   if (img) {
+                                       deleteFile(img.folder, img.name);
+                                       setPreviewIndex(null);
+                                   }
+                               }} style={{ padding: 5, marginRight: 15 }}><Ionicons name="trash" size={24} color="#EF4444" /></TouchableOpacity>
+                               <TouchableOpacity onPress={() => setPreviewIndex(null)} style={{ padding: 5 }}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
+                           </View>
+                       )}
+                   />
+                 </View>
+               );
+            })()}
             
             {currentPreviewType === 'video' && <VideoPreview uri={currentPreviewFile?.uri!} />}
             {currentPreviewType === 'audio' && <AudioPreview uri={currentPreviewFile?.uri!} />}
@@ -1502,7 +1724,7 @@ const GPSCameraOverlay = ({ geoData, sizeRatio = 1, isLandscape = false }: { geo
   return (
     <View style={{ flexDirection: 'row', alignItems: 'stretch', alignSelf: 'center', maxWidth: '95%' }} collapsable={false}>
       <View style={{ width: 85 * sizeRatio, borderRadius: 6 * sizeRatio, overflow: 'hidden', marginRight: 6 * sizeRatio, backgroundColor: '#E2E8F0', flexShrink: 0 }} collapsable={false}>
-         {geoData.lat === "0.000000" ? <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={24 * sizeRatio} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ flex: 1, width: '100%', height: '100%', resizeMode: 'contain' }} collapsable={false} />}
+         {geoData.lat === "0.000000" ? <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Ionicons name="map" size={24 * sizeRatio} color="#94A3B8" /></View> : <Image source={{ uri: mapUrl }} style={{ flex: 1, width: '100%', height: '100%', resizeMode: 'contain' }} />}
       </View>
 
       <View style={{ flexShrink: 1, backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: 6 * sizeRatio, paddingVertical: 4 * sizeRatio, borderRadius: 6 * sizeRatio, justifyContent: 'center' }} collapsable={false}>
@@ -1542,8 +1764,8 @@ const styles = StyleSheet.create({
   recordControlBtn: { paddingHorizontal: 15, paddingVertical: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center' },
   
   // Grid Action Buttons UI Update
-  actionRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10, width: '100%' },
-  actionBtn: { width: '31%', backgroundColor: '#FFF', paddingVertical: 15, paddingHorizontal: 5, borderRadius: 12, alignItems: 'center', elevation: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, borderWidth: 1, borderColor: '#F1F5F9' },
+  actionRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12, width: '100%' },
+  actionBtn: { width: '31%', aspectRatio: 1, backgroundColor: '#FFF', paddingHorizontal: 5, borderRadius: 12, alignItems: 'center', justifyContent: 'center', elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 3, borderWidth: 1, borderColor: '#E2E8F0' },
   
   actionIconWrap: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   actionLabel: { fontSize: 11, fontWeight: '700', color: '#475569', textAlign: 'center' },

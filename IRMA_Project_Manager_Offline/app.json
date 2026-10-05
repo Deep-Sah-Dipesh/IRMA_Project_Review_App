@@ -2,8 +2,11 @@
   "expo": {
     "name": "IRMA Project Manager",
     "slug": "IRMA_Project_Manager_Offline",
-    "version": "2.2.3",
-    "platforms": ["android", "ios"],
+    "version": "2.3.2",
+    "platforms": [
+      "android",
+      "ios"
+    ],
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -15,7 +18,6 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "4",
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
@@ -23,7 +25,6 @@
       }
     },
     "android": {
-      "versionCode": 4,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

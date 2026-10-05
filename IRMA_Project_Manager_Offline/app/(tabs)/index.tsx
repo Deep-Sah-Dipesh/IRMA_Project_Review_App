@@ -4,13 +4,12 @@ import * as SQLite from 'expo-sqlite';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as SecureStore from 'expo-secure-store';
-import { doc, getDoc } from 'firebase/firestore';
 import * as Linking from 'expo-linking';
-
-import { db as firestoreDb } from '../../utils/firebaseConfig';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { globalStyles } from '../../styles/globalStyles';
 import { useUserStore } from '../../store/userStore';
+import { getActiveUserId } from '../../utils/userSession';
+import { getQuarterStr, getQuarterFromYYYYMMDD } from '../../utils/period';
 
 interface Tender {
   project_id: string;
@@ -35,34 +34,18 @@ const getShortSortName = (val: string) => {
   return map[val] || 'Sort By';
 };
 
-const getActiveUserId = async () => {
-  try {
-    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-    if (sessionStr) {
-      const parsedSession = JSON.parse(sessionStr);
-      let uId = parsedSession.uniqueUserId || parsedSession.userId;
-      try {
-        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
-        if (userSnap.exists() && userSnap.data().uniqueUserId) {
-            uId = userSnap.data().uniqueUserId;
-            if (parsedSession.uniqueUserId !== uId) {
-                parsedSession.uniqueUserId = uId;
-                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
-            }
-        }
-      } catch (e) { console.warn(e); }
-      return uId || 'AnonymousUser';
-    }
-  } catch(e) { console.warn(e); }
-  return 'AnonymousUser';
-};
+// ─ Module-level KML scan cache (60s TTL to avoid re-scanning on every tab focus) ─
+let _kmlCache: { data: Set<string>; ts: number; userId: string } = { data: new Set(), ts: 0, userId: '' };
 
-const scanForKmls = async (userId: string) => {
+const scanForKmls = async (userId: string): Promise<Set<string>> => {
+  const now = Date.now();
+  if (_kmlCache.userId === userId && now - _kmlCache.ts < 60_000) return _kmlCache.data;
+
   const kmlSet = new Set<string>();
   const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
   try {
     const info = await FileSystem.getInfoAsync(baseDir);
-    if (!info.exists) return kmlSet;
+    if (!info.exists) { _kmlCache = { data: kmlSet, ts: now, userId }; return kmlSet; }
     const folders = await FileSystem.readDirectoryAsync(baseDir);
     for (const folder of folders) {
       if (folder === 'SQLite' || folder.endsWith('.json')) continue;
@@ -86,6 +69,7 @@ const scanForKmls = async (userId: string) => {
       if (hasKml) kmlSet.add(folder);
     }
   } catch(e) {}
+  _kmlCache = { data: kmlSet, ts: now, userId };
   return kmlSet;
 };
 
@@ -93,44 +77,54 @@ const getFolderName = (pId: string, tId: string) => {
   return `${pId}_${tId || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 };
 
-const TenderCard = React.memo(({ item, onPress, hasKml, isVisited, isPlanned, onOpenKml }: { item: Tender, onPress: (pId: string, tId: string) => void, hasKml: boolean, isVisited: boolean, isPlanned: boolean, onOpenKml: (pId: string, tId: string) => void }) => (
-  <TouchableOpacity style={[globalStyles.card, isVisited ? styles.visitedCard : (isPlanned ? styles.plannedCard : null)]} activeOpacity={0.7} onPress={() => onPress(item.project_id, item.tender_id)}>
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-      <Text style={styles.cardId}>{item.project_id}</Text>
-      <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
-    </View>
-    <Text style={styles.cardType}>{item.project_type}</Text>
-    <Text style={styles.cardTitle}>{item.project_title}</Text>
-    <View style={styles.cardFooter}>
-      <View style={styles.footerItem}>
-        <Ionicons name="location-outline" size={14} color="#64748B" style={{marginRight: 4, marginTop: 1}}/>
-        <Text style={styles.cardMeta}>{item.ulb}, {item.district}</Text>
-      </View>
-      <View style={[styles.footerItem, { justifyContent: 'flex-end' }]}>
-        <Text style={styles.tenderId}>Tender: {item.tender_id}</Text>
-      </View>
-    </View>
+const TenderCard = React.memo(({ item, onPress, hasKml, isVisited, isPlanned, onOpenKml }: { item: Tender, onPress: (pId: string, tId: string) => void, hasKml: boolean, isVisited: boolean, isPlanned: boolean, onOpenKml: (pId: string, tId: string) => void }) => {
+  const hasMapPin = !!(item.latitude && item.longitude);
+  const hasBoth = hasMapPin && hasKml;
 
-    <View style={globalStyles.btnRow}>
-      <View style={{ flex: 1, marginRight: 5 }}>
-        {item.latitude && item.longitude && (
-          <TouchableOpacity style={globalStyles.locateYellowBtn} onPress={() => Linking.openURL(`https://maps.google.com/?q=${item.latitude},${item.longitude}`)}>
-            <Ionicons name="navigate-circle-outline" size={20} color="white" />
-            <Text style={globalStyles.locateBtnText}>Map Pin</Text>
-          </TouchableOpacity>
-        )}
+  return (
+    <TouchableOpacity style={[globalStyles.card, { padding: 10, marginBottom: 8, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1, shadowOpacity: 0.05 }, isVisited ? styles.visitedCard : (isPlanned ? styles.plannedCard : null)]} activeOpacity={0.7} onPress={() => onPress(item.project_id, item.tender_id)}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2 }}>
+        <Text style={styles.cardId}>{item.project_id}</Text>
+        <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
       </View>
-      <View style={{ flex: 1, marginLeft: 5 }}>
-        {hasKml && (
-          <TouchableOpacity style={globalStyles.locateGreenBtn} onPress={() => onOpenKml(item.project_id, item.tender_id)}>
-            <Ionicons name="earth" size={20} color="white" />
-            <Text style={globalStyles.locateBtnText}>KML Pin</Text>
-          </TouchableOpacity>
-        )}
+      <Text style={styles.cardType}>{item.project_type}</Text>
+      <Text style={styles.cardTitle}>{item.project_title}</Text>
+      <View style={styles.cardFooter}>
+        <View style={styles.footerRow}>
+          <Ionicons name="location-outline" size={14} color="#64748B" style={{marginRight: 4, marginTop: 1}}/>
+          <Text style={styles.cardMeta} numberOfLines={1}>{item.ulb}, {item.district}</Text>
+        </View>
+        <View style={[styles.footerRow, { marginTop: 2 }]}>
+          <Ionicons name="pricetag-outline" size={14} color="#94A3B8" style={{marginRight: 4, marginTop: 1}}/>
+          <Text style={styles.tenderId} numberOfLines={1}>Tender: {item.tender_id}</Text>
+        </View>
       </View>
-    </View>
-  </TouchableOpacity>
-));
+
+      {(hasMapPin || hasKml) && (
+        <View style={[globalStyles.pinBtnRow, { marginTop: 8 }]}>
+          {hasMapPin && (
+            <TouchableOpacity 
+              style={[globalStyles.pinBtnHalf, { paddingVertical: 6, backgroundColor: '#EAB308', flex: hasBoth ? 1 : 0, width: hasBoth ? undefined : '50%' }]} 
+              onPress={() => Linking.openURL(`https://maps.google.com/?q=${item.latitude},${item.longitude}`)}
+            >
+              <Ionicons name="navigate-circle-outline" size={16} color="#FFF" style={{ marginRight: 4 }} />
+              <Text style={globalStyles.pinBtnText}>Map Pin</Text>
+            </TouchableOpacity>
+          )}
+          {hasKml && (
+            <TouchableOpacity 
+              style={[globalStyles.pinBtnHalf, { paddingVertical: 6, backgroundColor: '#10B981', flex: hasBoth ? 1 : 0, width: hasBoth ? undefined : '50%' }]} 
+              onPress={() => onOpenKml(item.project_id, item.tender_id)}
+            >
+              <Ionicons name="earth" size={16} color="#FFF" style={{ marginRight: 4 }} />
+              <Text style={globalStyles.pinBtnText}>KML Pin</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+});
 
 export default function ProjectsTab() {
   const router = useRouter();
@@ -163,29 +157,74 @@ export default function ProjectsTab() {
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
+      const loadSavedFilters = async () => {
+        try {
+          const saved = await AsyncStorage.getItem('irma_projects_filters');
+          if (saved && isMounted) {
+            const parsed = JSON.parse(saved);
+            if (parsed.sDistrict) setDistrict(parsed.sDistrict);
+            if (parsed.sUlb) setUlb(parsed.sUlb);
+            if (parsed.sProgress) setProgressFilter(parsed.sProgress);
+            if (parsed.sSortBy) setSortBy(parsed.sSortBy);
+            if (parsed.sSortOrder) setSortOrder(parsed.sSortOrder);
+          }
+        } catch(e) {}
+      };
+
       if (store.selectedState !== 'All States') setState(store.selectedState);
       
+      loadSavedFilters();
       loadTenders(isMounted);
       checkLocalWorkspace(isMounted);
       return () => { isMounted = false; };
     }, [store.selectedState])
   );
 
+  useEffect(() => {
+    if (!loading) {
+      AsyncStorage.setItem('irma_projects_filters', JSON.stringify({
+        sDistrict: district, sUlb: ulb, sProgress: progressFilter, sSortBy: sortBy, sSortOrder: sortOrder
+      })).catch(() => {});
+    }
+  }, [district, ulb, progressFilter, sortBy, sortOrder, loading]);
+
   const checkLocalWorkspace = async (isMounted: boolean) => {
     const userId = await getActiveUserId();
     const kmls = await scanForKmls(userId); 
     const visited = new Set<string>();
     let loadedPlanner = [];
+    const currentQuarter = getQuarterStr();
+
     try {
       const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
       const folders = await FileSystem.readDirectoryAsync(baseDir).catch(()=>[]);
+      
       for (const f of folders) {
-          if (f !== 'SQLite' && !f.endsWith('.json')) visited.add(f);
+          if (f !== 'SQLite' && !f.endsWith('.json')) {
+              try {
+                  const visitDirs = await FileSystem.readDirectoryAsync(`${baseDir}${f}/`).catch(()=>[]);
+                  const hasCurrentQuarterVisit = visitDirs.some(vDir => {
+                      if (vDir.startsWith('VISIT_')) {
+                          const match = vDir.match(/_(\d{8})_/);
+                          if (match && getQuarterFromYYYYMMDD(match[1]) === currentQuarter) {
+                              return true;
+                          }
+                      }
+                      return false;
+                  });
+                  if (hasCurrentQuarterVisit) {
+                      visited.add(f);
+                  }
+              } catch(e) {}
+          }
       }
       
       const path = `${baseDir}planner_cache.json`;
       const info = await FileSystem.getInfoAsync(path);
-      if(info.exists) loadedPlanner = JSON.parse(await FileSystem.readAsStringAsync(path));
+      if(info.exists) {
+          const content = await FileSystem.readAsStringAsync(path);
+          if (content) loadedPlanner = JSON.parse(content);
+      }
     } catch(e) {}
     
     if (isMounted) {
@@ -225,8 +264,8 @@ export default function ProjectsTab() {
           for (const file of files) {
             const fullPath = `${currentPath}${file}`;
             const fileInfo = await FileSystem.getInfoAsync(fullPath);
-            if (fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); }
-            else if (file.toLowerCase().endsWith('.kml')) {
+            if (fileInfo.exists && fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); }
+            else if (fileInfo.exists && !fileInfo.isDirectory && file.toLowerCase().endsWith('.kml')) {
               if (fileInfo.modificationTime && fileInfo.modificationTime >= latestTime) {
                 latestTime = fileInfo.modificationTime; latestKmlUri = fullPath;
               }
@@ -337,8 +376,9 @@ export default function ProjectsTab() {
 
   const renderItem = useCallback(({ item }: { item: Tender }) => {
     const fName = getFolderName(item.project_id, item.tender_id);
-    const isVisited = visitedProjects.has(fName);
-    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id);
+    const cleanId = (item.project_id || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const isVisited = visitedProjects.has(fName) || visitedProjects.has(item.project_id) || visitedProjects.has(cleanId);
+    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id && i.tenderId === item.tender_id);
 
     return (
       <TenderCard 
@@ -365,11 +405,10 @@ export default function ProjectsTab() {
     <View style={globalStyles.container}>
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          <Text style={styles.title} numberOfLines={1}>All Projects</Text>
+          <Text style={styles.title} numberOfLines={1}>Projects</Text>
           <View style={styles.headerControls}>
-            <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={styles.searchIconBtn}>
-              <Ionicons name="search" size={16} color="#1E293B" />
-              <Text style={{marginLeft: 4, fontSize: 13, fontWeight: '600', color: '#1E293B'}}>Search</Text>
+            <TouchableOpacity onPress={() => setIsSearchActive(!isSearchActive)} style={[styles.searchIconBtn, { paddingHorizontal: 12 }]}>
+              <Ionicons name="search" size={18} color="#1E293B" />
             </TouchableOpacity>
             
             <TouchableOpacity 
@@ -395,6 +434,7 @@ export default function ProjectsTab() {
             <Ionicons name="search" size={20} color="#64748B" />
             <TextInput 
               placeholder="Search ID, Title, Type, ULB..." 
+              placeholderTextColor="#94A3B8"
               style={styles.input}
               value={search}
               onChangeText={setSearch}
@@ -510,17 +550,17 @@ const styles = StyleSheet.create({
   filterText: { color: '#2563EB', fontWeight: '600', marginRight: 6, fontSize: 13 },
   clearBtn: { paddingHorizontal: 10, justifyContent: 'center', marginRight: 20 },
   
-  visitedCard: { backgroundColor: 'rgba(220, 252, 231, 0.7)', borderColor: '#86EFAC', borderWidth: 1 },
-  plannedCard: { backgroundColor: 'rgba(254, 249, 195, 0.7)', borderColor: '#FDE047', borderWidth: 1 },
+  visitedCard: { backgroundColor: '#F0FDF4', borderColor: '#10B981', borderWidth: 1.5 },
+  plannedCard: { backgroundColor: '#FFFBEB', borderColor: '#F59E0B', borderWidth: 1.5 },
   
-  cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 12 },
-  progressBadge: { fontSize: 13, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, borderRadius: 4, overflow: 'hidden' },
-  cardType: { fontSize: 12, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 6 },
-  cardFooter: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderColor: '#F1F5F9', gap: 10 },
-  footerItem: { flexDirection: 'row', alignItems: 'flex-start', flexShrink: 1, minWidth: '45%' },
-  cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '500', lineHeight: 16 },
-  tenderId: { fontSize: 12, color: '#94A3B8', lineHeight: 16, fontWeight: '500' },
+  cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },
+  progressBadge: { fontSize: 12, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
+  cardType: { fontSize: 11, color: '#64748B', marginBottom: 2, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 4, lineHeight: 22 },
+  cardFooter: { marginTop: 4, paddingTop: 6, borderTopWidth: 1, borderColor: '#F1F5F9' },
+  footerRow: { flexDirection: 'row', alignItems: 'center' },
+  cardMeta: { fontSize: 12, color: '#64748B', fontWeight: '600' },
+  tenderId: { fontSize: 11, color: '#94A3B8', fontWeight: '500' },
   emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '70%', paddingBottom: 20 },

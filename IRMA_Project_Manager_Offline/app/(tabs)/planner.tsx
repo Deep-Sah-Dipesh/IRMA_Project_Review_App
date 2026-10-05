@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, TouchableOpacity, FlatList, TextInput, StyleSheet, Keyboard, Modal, TouchableWithoutFeedback } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, TextInput, StyleSheet, Keyboard, Modal, TouchableWithoutFeedback, Linking, Alert } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,8 @@ import { doc, getDoc } from 'firebase/firestore';
 
 import { db as firestoreDb } from '../../utils/firebaseConfig';
 import { useUserStore } from '../../store/userStore';
+import { getActiveUserId } from '../../utils/userSession';
+import { getQuarterStr, getQuarterFromYYYYMMDD } from '../../utils/period';
 
 const getFolderName = (pId: string, tId: string) => {
   return `${pId}_${tId || 'UNKNOWN_TENDER'}`.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -16,27 +18,7 @@ const getFolderName = (pId: string, tId: string) => {
 
 type SortOption = 'Project Title' | 'Physical Progress';
 
-const getActiveUserId = async () => {
-  try {
-    const sessionStr = await SecureStore.getItemAsync('irma_device_auth_session');
-    if (sessionStr) {
-      const parsedSession = JSON.parse(sessionStr);
-      let uId = parsedSession.uniqueUserId || parsedSession.userId;
-      try {
-        const userSnap = await getDoc(doc(firestoreDb, 'users', parsedSession.userId));
-        if (userSnap.exists() && userSnap.data().uniqueUserId) {
-            uId = userSnap.data().uniqueUserId;
-            if (parsedSession.uniqueUserId !== uId) {
-                parsedSession.uniqueUserId = uId;
-                await SecureStore.setItemAsync('irma_device_auth_session', JSON.stringify(parsedSession));
-            }
-        }
-      } catch (e) { console.warn(e); }
-      return uId || 'AnonymousUser';
-    }
-  } catch(e) { console.warn(e); }
-  return 'AnonymousUser';
-};
+
 
 const scanForKmls = async (userId: string) => {
   const kmlSet = new Set<string>();
@@ -70,7 +52,10 @@ const scanForKmls = async (userId: string) => {
   return kmlSet;
 };
 
-const PlannerCard = React.memo(({ item, isVisited, isPlanned, activeTab, onPressCard, onTogglePlan }: any) => {
+const PlannerCard = React.memo(({ item, hasKml, isVisited, isPlanned, activeTab, onPressCard, onTogglePlan, onOpenKml }: any) => {
+  const hasMapPin = !!(item.latitude && item.longitude);
+  const hasBoth = hasMapPin && hasKml;
+
   let iconName: keyof typeof Ionicons.glyphMap = "add";
   let iconColor = "#2563EB";
   let btnStyle = { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' };
@@ -95,12 +80,24 @@ const PlannerCard = React.memo(({ item, isVisited, isPlanned, activeTab, onPress
 
   return (
     <TouchableOpacity 
-      style={[styles.card, isVisited && activeTab !== 'pending' && { opacity: 0.6 }]}
+      style={[
+        styles.card, 
+        isVisited ? styles.visitedCard : (isPlanned ? styles.plannedCard : null),
+        isVisited && activeTab !== 'pending' && { opacity: 0.9 }
+      ]}
       activeOpacity={0.7}
       onPress={() => onPressCard(item)}
     >
       <View style={styles.cardHeaderRow}>
-        <Text style={styles.cardId}>{item.project_id}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={styles.cardId}>{item.project_id}</Text>
+          {isVisited && (
+            <View style={styles.visitedBadge}>
+              <Ionicons name="checkmark-circle" size={12} color="#15803D" style={{ marginRight: 2 }} />
+              <Text style={styles.visitedBadgeText}>Visited</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.progressBadge}>{item.physical_progress || '0'}%</Text>
       </View>
 
@@ -119,6 +116,29 @@ const PlannerCard = React.memo(({ item, isVisited, isPlanned, activeTab, onPress
           <Text style={[styles.actionBtnLabel, { color: iconColor }]}>{btnLabel}</Text>
         </TouchableOpacity>
       </View>
+
+      {(hasMapPin || hasKml) && (
+        <View style={styles.pinBtnRow}>
+          {hasMapPin && (
+            <TouchableOpacity 
+              style={[styles.pinBtnHalf, { backgroundColor: '#EAB308', flex: hasBoth ? 1 : 0, width: hasBoth ? undefined : '50%' }]} 
+              onPress={() => Linking.openURL(`https://maps.google.com/?q=${item.latitude},${item.longitude}`)}
+            >
+              <Ionicons name="navigate-circle-outline" size={18} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.pinBtnText}>Map Pin</Text>
+            </TouchableOpacity>
+          )}
+          {hasKml && (
+            <TouchableOpacity 
+              style={[styles.pinBtnHalf, { backgroundColor: '#10B981', flex: hasBoth ? 1 : 0, width: hasBoth ? undefined : '50%' }]} 
+              onPress={() => onOpenKml(item.project_id, item.tender_id)}
+            >
+              <Ionicons name="earth" size={18} color="#FFF" style={{ marginRight: 6 }} />
+              <Text style={styles.pinBtnText}>KML Pin</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </TouchableOpacity>
   );
 });
@@ -139,69 +159,148 @@ export default function PlannerTab() {
   
   const [allProjects, setAllProjects] = useState<any[]>([]);
   const [visitedSet, setVisitedSet] = useState<Set<string>>(new Set());
+  const [kmlProjects, setKmlProjects] = useState<Set<string>>(new Set());
   const [plannerItems, setPlannerItems] = useState<any[]>([]); 
 
   const [collapsedPendingUlbs, setCollapsedPendingUlbs] = useState<Set<string>>(new Set());
   const [expandedPlanningUlbs, setExpandedPlanningUlbs] = useState<Set<string>>(new Set());
 
-  useFocusEffect(
-    useCallback(() => {
-      let isMounted = true;
-      
-      const scanVisitedAndPlanner = async () => {
-        try {
-          const userId = await getActiveUserId();
-          const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
-          
-          const validVisited = new Set<string>();
-          let loadedPlanner = [];
+  const checkIsVisited = useCallback((p: any) => {
+    if (!p) return false;
+    const fName = getFolderName(p.project_id, p.tender_id);
+    const cleanId = (p.project_id || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (visitedSet.has(fName) || visitedSet.has(p.project_id) || visitedSet.has(cleanId)) return true;
+    return false;
+  }, [visitedSet]);
 
-          try {
-            const info = await FileSystem.getInfoAsync(baseDir);
-            if (info.exists) {
-              const folders = await FileSystem.readDirectoryAsync(baseDir);
-              for (const folder of folders) {
-                 if (validVisited.has(folder) || folder === 'SQLite' || folder.endsWith('.json')) continue;
-                 
-                 const projIdMatch = folder.split('_')[0];
-                 if (projIdMatch) {
-                     validVisited.add(projIdMatch);
-                 }
+  const handleOpenKml = useCallback(async (projectId: string, tenderId: string) => {
+    try {
+      let uid = await getActiveUserId();
+      const folderName = getFolderName(projectId, tenderId);
+      const sourcePath = `${FileSystem.documentDirectory}projects/${uid}/${folderName}/`;
+      
+      let latestKmlUri = '';
+      let latestTime = 0;
+      
+      const findLatestKml = async (currentPath: string) => {
+        try {
+          const info = await FileSystem.getInfoAsync(currentPath);
+          if (!info.exists || !info.isDirectory) return;
+          const files = await FileSystem.readDirectoryAsync(currentPath);
+          for (const file of files) {
+            const fullPath = `${currentPath}${file}`;
+            const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            if (fileInfo.exists && fileInfo.isDirectory) { await findLatestKml(`${fullPath}/`); }
+            else if (fileInfo.exists && !fileInfo.isDirectory && file.toLowerCase().endsWith('.kml')) {
+              if (fileInfo.modificationTime && fileInfo.modificationTime >= latestTime) {
+                latestTime = fileInfo.modificationTime; latestKmlUri = fullPath;
               }
             }
-            
-            const path = `${baseDir}planner_cache.json`;
-            const pInfo = await FileSystem.getInfoAsync(path);
-            if (pInfo.exists) loadedPlanner = JSON.parse(await FileSystem.readAsStringAsync(path));
-          } catch(e) {}
-          
-          if (isMounted) {
-              setVisitedSet(validVisited);
-              setPlannerItems(loadedPlanner);
           }
         } catch(e) {}
       };
       
+      await findLatestKml(sourcePath);
+
+      if (latestKmlUri) {
+         const content = await FileSystem.readAsStringAsync(latestKmlUri);
+         const coordMatch = content.match(/<coordinates>[\s\S]*?([0-9.-]+)\s*,\s*([0-9.-]+)/i);
+         if (coordMatch) {
+             Linking.openURL(`https://maps.google.com/?q=${coordMatch[2].trim()},${coordMatch[1].trim()}`);
+             return;
+         }
+         Alert.alert("Error", "Could not parse location data from the KML file.");
+      }
+      else Alert.alert("Not Found", "No KML file found for this project.");
+    } catch (e) { Alert.alert("Error", "Could not open KML file."); }
+  }, []);
+
+  const scanVisitedAndPlanner = useCallback(async () => {
+    try {
+      const userId = await getActiveUserId();
+      const baseDir = `${FileSystem.documentDirectory}projects/${userId}/`;
+      
+      const validVisited = new Set<string>();
+      let loadedPlanner = [];
+      const currentQuarter = getQuarterStr();
+
+      try {
+        const info = await FileSystem.getInfoAsync(baseDir);
+        if (info.exists) {
+          const folders = await FileSystem.readDirectoryAsync(baseDir);
+          for (const folder of folders) {
+             if (folder === 'SQLite' || folder.endsWith('.json')) continue;
+             
+             try {
+                 const visitDirs = await FileSystem.readDirectoryAsync(`${baseDir}${folder}/`).catch(()=>[]);
+                 const hasCurrentQuarterVisit = visitDirs.some(vDir => {
+                     if (vDir.startsWith('VISIT_')) {
+                         const match = vDir.match(/_(\d{8})_/);
+                         if (match && getQuarterFromYYYYMMDD(match[1]) === currentQuarter) {
+                             return true;
+                         }
+                     }
+                     return false;
+                 });
+                 if (hasCurrentQuarterVisit) {
+                     validVisited.add(folder);
+                     const lastUnderscore = folder.lastIndexOf('_');
+                     if (lastUnderscore > 0) {
+                         validVisited.add(folder.substring(0, lastUnderscore));
+                     }
+                     const firstUnderscore = folder.indexOf('_');
+                     if (firstUnderscore > 0) {
+                         validVisited.add(folder.substring(0, firstUnderscore));
+                     }
+                 }
+             } catch(e) {}
+          }
+        }
+        
+        const path = `${baseDir}planner_cache.json`;
+        const pInfo = await FileSystem.getInfoAsync(path);
+        if (pInfo.exists) loadedPlanner = JSON.parse(await FileSystem.readAsStringAsync(path));
+      } catch(e) {}
+      
+      const kmls = await scanForKmls(userId);
+      setKmlProjects(kmls);
+      setVisitedSet(validVisited);
+      setPlannerItems(loadedPlanner);
+    } catch(e) {}
+  }, []);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      let query = `
+        SELECT t.*, pd.latitude, pd.longitude 
+        FROM tenders t
+        LEFT JOIN project_details pd ON t.project_id = pd.project_id
+        WHERE t.ulb IS NOT NULL AND t.ulb != ''
+      `;
+      let params: string[] = [];
+      if (store.selectedState && store.selectedState !== 'All States') {
+        query += " AND t.state = ?"; params.push(store.selectedState);
+      }
+      if (district) {
+        query += " AND t.district = ?"; params.push(district);
+      }
+      const res = await db.getAllAsync<any>(query, params);
+      setAllProjects(res || []);
+    } catch(e) {
+      console.warn("Failed to load planner projects:", e);
+    }
+  }, [db, store.selectedState, district]);
+
+  useFocusEffect(
+    useCallback(() => {
       scanVisitedAndPlanner();
-      return () => { isMounted = false; };
-    }, [activeTab]) 
+      loadProjects();
+    }, [scanVisitedAndPlanner, loadProjects, activeTab]) 
   );
 
   useEffect(() => {
-    const loadProjects = async () => {
-      let query = "SELECT * FROM tenders WHERE ulb IS NOT NULL AND ulb != ''";
-      let params: string[] = [];
-      if (store.selectedState && store.selectedState !== 'All States') {
-        query += " AND state = ?"; params.push(store.selectedState);
-      }
-      if (district) {
-        query += " AND district = ?"; params.push(district);
-      }
-      const res = await db.getAllAsync<any>(query, params);
-      setAllProjects(res);
-    };
     loadProjects();
-  }, [store.selectedState, district]);
+  }, [loadProjects]);
 
   useEffect(() => {
     setSearch('');
@@ -225,11 +324,10 @@ export default function PlannerTab() {
   }, [activeTab]);
 
   const togglePlanState = useCallback(async (proj: any) => {
-    const cleanProjId = proj.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    if (visitedSet.has(cleanProjId)) return;
+    if (checkIsVisited(proj)) return;
 
     let items = [...plannerItems];
-    const existingIdx = items.findIndex(i => i.projectId === proj.project_id);
+    const existingIdx = items.findIndex(i => i.projectId === proj.project_id && i.tenderId === proj.tender_id);
 
     if (existingIdx > -1) {
       items.splice(existingIdx, 1);
@@ -252,7 +350,7 @@ export default function PlannerTab() {
     await FileSystem.makeDirectoryAsync(userDir, { intermediates: true }).catch(()=>{});
     const cachePath = `${userDir}planner_cache.json`;
     await FileSystem.writeAsStringAsync(cachePath, JSON.stringify(items));
-  }, [plannerItems, visitedSet]);
+  }, [plannerItems, checkIsVisited]);
 
   const handlePressCard = useCallback((item: any) => {
      router.push(`/project/${encodeURIComponent(item.project_id)}?tender_id=${encodeURIComponent(item.tender_id || 'UNKNOWN')}` as any);
@@ -267,26 +365,24 @@ export default function PlannerTab() {
   // Dynamic count logic that accurately maps state filters with user's planner data
   const pendingCount = useMemo(() => {
     let count = 0;
-    const pendingProjIds = new Set(plannerItems.map(i => i.projectId));
+    const pendingProjKeys = new Set(plannerItems.map(i => `${i.projectId}_${i.tenderId}`));
     allProjects.forEach(p => {
-      const cleanProjId = p.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const isPending = pendingProjIds.has(p.project_id);
-      const isVisited = visitedSet.has(cleanProjId);
+      const isPending = pendingProjKeys.has(`${p.project_id}_${p.tender_id}`);
+      const isVisited = checkIsVisited(p);
       if (isPending && !isVisited) count++;
     });
     return count;
-  }, [allProjects, plannerItems, visitedSet]);
+  }, [allProjects, plannerItems, checkIsVisited]);
 
   const listData = useMemo(() => {
     const q = search.toLowerCase();
-    const pendingProjIds = new Set(plannerItems.map(i => i.projectId));
+    const pendingProjKeys = new Set(plannerItems.map(i => `${i.projectId}_${i.tenderId}`));
 
     const groups: Record<string, any[]> = {};
 
     allProjects.forEach(p => {
-      const cleanProjId = p.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const isPending = pendingProjIds.has(p.project_id);
-      const isVisited = visitedSet.has(cleanProjId);
+      const isPending = pendingProjKeys.has(`${p.project_id}_${p.tender_id}`);
+      const isVisited = checkIsVisited(p);
 
       let shouldInclude = false;
       if (activeTab === 'pending') {
@@ -317,10 +413,10 @@ export default function PlannerTab() {
       
       projects.sort((a, b) => {
         if (activeTab === 'planning') {
-          const aVisited = visitedSet.has(a.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
-          const bVisited = visitedSet.has(b.project_id.replace(/[^a-zA-Z0-9_-]/g, '_'));
-          const aPlanned = pendingProjIds.has(a.project_id);
-          const bPlanned = pendingProjIds.has(b.project_id);
+          const aVisited = checkIsVisited(a);
+          const bVisited = checkIsVisited(b);
+          const aPlanned = pendingProjKeys.has(`${a.project_id}_${a.tender_id}`);
+          const bPlanned = pendingProjKeys.has(`${b.project_id}_${b.tender_id}`);
 
           const weightA = aVisited ? 3 : (aPlanned ? 1 : 2);
           const weightB = bVisited ? 3 : (bPlanned ? 1 : 2);
@@ -359,7 +455,7 @@ export default function PlannerTab() {
     });
 
     return flattenedData;
-  }, [allProjects, search, sortBy, sortOrder, activeTab, visitedSet, plannerItems, collapsedPendingUlbs, expandedPlanningUlbs]);
+  }, [allProjects, search, sortBy, sortOrder, activeTab, checkIsVisited, plannerItems, collapsedPendingUlbs, expandedPlanningUlbs]);
 
 
   const renderItem = useCallback(({ item }: { item: any }) => {
@@ -379,31 +475,38 @@ export default function PlannerTab() {
       );
     }
 
-    const cleanProjId = item.project_id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const isVisited = visitedSet.has(cleanProjId);
-    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id);
+    const isVisited = checkIsVisited(item);
+    const isPlanned = !isVisited && plannerItems.some(i => i.projectId === item.project_id && i.tenderId === item.tender_id);
+    const folder = getFolderName(item.project_id, item.tender_id);
+    const hasKml = kmlProjects.has(folder);
 
     return (
       <PlannerCard 
          item={item} 
+         hasKml={hasKml}
          isVisited={isVisited} 
          isPlanned={isPlanned} 
          activeTab={activeTab} 
          onPressCard={handlePressCard} 
          onTogglePlan={togglePlanState} 
+         onOpenKml={handleOpenKml}
       />
     );
-  }, [activeTab, collapsedPendingUlbs, expandedPlanningUlbs, visitedSet, plannerItems, toggleUlb, togglePlanState, handlePressCard]);
+  }, [activeTab, collapsedPendingUlbs, expandedPlanningUlbs, checkIsVisited, plannerItems, kmlProjects, toggleUlb, togglePlanState, handlePressCard, handleOpenKml]);
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <View style={{ flex: 1, paddingRight: 10 }}>
-          <Text style={styles.title}>Field Visit Planner</Text>
-        </View>
-        <View style={styles.locationBadge}>
-           <Ionicons name="location" size={12} color="#2563EB" />
-           <Text style={styles.locationText}>{store.selectedState}</Text>
+        <Text style={styles.title} numberOfLines={1}>Field Visit Planner</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
+          <View style={styles.trimesterBadge}>
+             <Ionicons name="calendar-outline" size={13} color="#1D4ED8" style={{ marginRight: 4 }} />
+             <Text style={styles.trimesterText}>Current Trimester: {getQuarterStr()}</Text>
+          </View>
+          <View style={styles.locationBadge}>
+             <Ionicons name="location" size={12} color="#2563EB" style={{ marginRight: 2 }} />
+             <Text style={styles.locationText}>{store.selectedState}</Text>
+          </View>
         </View>
       </View>
 
@@ -509,18 +612,20 @@ export default function PlannerTab() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
-  header: { padding: 20, paddingTop: 60, backgroundColor: '#FFF', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  header: { paddingHorizontal: 15, paddingTop: 60, paddingBottom: 15, backgroundColor: '#FFF', borderBottomWidth: 1, borderColor: '#E2E8F0' },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
-  locationBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DBEAFE', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
-  locationText: { color: '#1D4ED8', fontWeight: 'bold', marginLeft: 4, fontSize: 12 },
+  trimesterBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  trimesterText: { fontSize: 11, fontWeight: '700', color: '#1D4ED8' },
+  locationBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#BFDBFE' },
+  locationText: { color: '#1D4ED8', fontWeight: 'bold', marginLeft: 2, fontSize: 11 },
   
-  tabContainer: { flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 15, borderBottomWidth: 1, borderColor: '#E2E8F0' },
-  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, borderBottomWidth: 3, borderColor: 'transparent' },
+  tabContainer: { flexDirection: 'row', backgroundColor: '#FFF', paddingHorizontal: 10, borderBottomWidth: 1, borderColor: '#E2E8F0' },
+  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderBottomWidth: 3, borderColor: 'transparent' },
   tabBtnActive: { borderColor: '#2563EB' },
   tabText: { fontSize: 14, fontWeight: '700', color: '#64748B' },
   tabTextActive: { color: '#2563EB' },
 
-  searchSortRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 15, paddingTop: 15, gap: 10 },
+  searchSortRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 10, paddingTop: 10, gap: 10 },
   sortGroup: { flexDirection: 'row', alignItems: 'center' },
   toolbarBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', elevation: 1 },
   toolbarBtnText: { fontSize: 13, color: '#475569', marginLeft: 6, fontWeight: '700' },
@@ -531,17 +636,24 @@ const styles = StyleSheet.create({
   ulbHeaderText: { fontSize: 14, fontWeight: 'bold', color: '#334155', flexShrink: 1 },
   ulbCountBadge: { fontSize: 12, color: '#2563EB', fontWeight: 'bold', backgroundColor: '#DBEAFE', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12, marginLeft: 10 },
   
-  card: { backgroundColor: '#FFF', borderRadius: 12, padding: 15, marginBottom: 12, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F1F5F9' },
+  card: { backgroundColor: '#FFF', borderRadius: 12, padding: 12, marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 3, borderWidth: 1, borderColor: '#F1F5F9' },
+  visitedCard: { borderColor: '#10B981', borderWidth: 1.5, backgroundColor: '#F0FDF4' },
+  plannedCard: { borderColor: '#F59E0B', borderWidth: 1.5, backgroundColor: '#FFFBEB' },
+  visitedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 8 },
+  visitedBadgeText: { fontSize: 10, fontWeight: 'bold', color: '#15803D' },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   cardId: { color: '#2563EB', fontWeight: 'bold', fontSize: 13 },
   progressBadge: { fontSize: 12, fontWeight: 'bold', color: '#16A34A', backgroundColor: '#DCFCE7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
   tenderId: { fontSize: 12, color: '#64748B', fontWeight: '600', marginBottom: 2 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 12, lineHeight: 22 },
-  cardBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', borderTopWidth: 1, borderColor: '#F1F5F9', paddingTop: 12 },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1E293B', marginBottom: 4, lineHeight: 22 },
+  cardBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', borderTopWidth: 1, borderColor: '#F1F5F9', paddingTop: 8 },
   cardType: { fontSize: 11, color: '#94A3B8', fontWeight: '700', textTransform: 'uppercase', flex: 1, paddingRight: 10 },
   
   actionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, borderWidth: 1 },
   actionBtnLabel: { fontSize: 11, fontWeight: 'bold', marginLeft: 4 },
+  pinBtnRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 10, width: '100%' },
+  pinBtnHalf: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, elevation: 1 },
+  pinBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
 
   emptyText: { textAlign: 'center', marginTop: 40, color: '#94A3B8', fontSize: 14 },
   

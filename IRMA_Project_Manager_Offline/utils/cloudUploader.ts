@@ -2,8 +2,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Device from 'expo-device';
 import { zip } from 'react-native-zip-archive';
 import { doc, getDoc } from 'firebase/firestore'; // Added to fetch unique ID
-import { db } from './firebaseConfig'; // Added to access Firestore
-
+import { db } from './firebaseConfig';
+import { getActiveUserId } from './userSession';
 const FIREBASE_BUCKET = 'irma-project-manager-2k26.firebasestorage.app'; 
 const SYNC_CACHE_FILE = `${FileSystem.documentDirectory}cloud_sync_cache.json`;
 
@@ -57,16 +57,8 @@ export const generateCloudLinkAndUpload = async (
   
   const rawDeviceId = Device.osBuildId || Device.designName || 'UnknownDevice';
 
-  // Fetch the actual uniqueUserId from Firestore using the passed session ID (email)
-  let actualUserId = userId;
-  try {
-    const userSnap = await getDoc(doc(db, 'users', userId));
-    if (userSnap.exists() && userSnap.data().uniqueUserId) {
-      actualUserId = userSnap.data().uniqueUserId;
-    }
-  } catch (e) {
-    console.warn("Could not fetch uniqueUserId, falling back to session ID", e);
-  }
+  // Fetch the actual uniqueUserId from userSession (fast, cached)
+  let actualUserId = await getActiveUserId();
 
   // Sanitize the dynamically fetched unique User ID
   const cleanUserId = actualUserId.replace(/\s+/g, '');

@@ -34,6 +34,9 @@ export const globalStyles = StyleSheet.create({
   locateYellowBtn: { flex: 1, flexDirection: 'row', backgroundColor: '#EAB308', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', elevation: 2 },
   locateGreenBtn: { flex: 1, flexDirection: 'row', backgroundColor: '#10B981', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', elevation: 2 },
   locateBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13, marginLeft: 6 },
+  pinBtnRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 10, width: '100%' },
+  pinBtnHalf: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 9, paddingHorizontal: 10, borderRadius: 8, elevation: 2 },
+  pinBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 13 },
 
   // Badges & Details
   progressBadge: { backgroundColor: '#DBEAFE', color: '#1D4ED8', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, fontSize: 12, fontWeight: '800', overflow: 'hidden' },

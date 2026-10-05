@@ -146,6 +146,18 @@ letter_template.py
 *.csv
 *template*.xlsx
 *.xlsx
-*.png
+# *.png
 *.html
 *.md
+
+# Expo specific ignores
+.expo/
+IRMA_Project_Manager_Offline/android/
+IRMA_Project_Manager_Offline/ios/
+android/
+ios/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+app-example/

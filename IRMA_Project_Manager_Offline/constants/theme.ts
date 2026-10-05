@@ -33,6 +33,7 @@ export const lightTheme = {
   warning: '#EAB308',
   overlay: 'rgba(0,0,0,0.5)',
   inputBg: '#F1F5F9',
+  icon: '#687076',
 };
 
 // Dark Mode Palette (Matches your current auth/migration screens)
@@ -48,6 +49,12 @@ export const darkTheme = {
   warning: '#FACC15',
   overlay: 'rgba(0,0,0,0.7)',
   inputBg: '#334155',
+  icon: '#9BA1A6',
+};
+
+export const Colors = {
+  light: lightTheme,
+  dark: darkTheme,
 };
 
 // Custom Hook to be used inside your components (e.g., VisitManager)

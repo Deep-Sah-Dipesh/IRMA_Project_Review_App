@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, Alert, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, ActivityIndicator, Alert, StyleSheet, TouchableOpacity, LogBox } from 'react-native';
 import { Stack } from 'expo-router';
 import { SQLiteProvider } from 'expo-sqlite';
 import * as SplashScreen from 'expo-splash-screen';
@@ -11,6 +11,14 @@ import { downloadAndInitDatabase, wipeSecureDatabase, DB_NAME } from '../utils/d
 import { verifyUserAccess, registerDeviceToUser } from '../utils/accessManager';
 import AuthScreen from '../components/AuthScreen';
 import UpdateHandler from '../components/UpdateHandler';
+
+LogBox.ignoreLogs([
+  '[expo-av]: Expo AV has been deprecated',
+  'Error encountered while updating server registration with latest device push token',
+  'FIS_AUTH_ERROR',
+  'Push token retrieval skipped',
+  'VirtualizedList: You have a large list that is slow to update',
+]);
 
 SplashScreen.preventAutoHideAsync();
 

@@ -35,7 +35,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [resendTimer, setResendTimer] = useState(0);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (mode === 'otp') {
       interval = setInterval(() => {
         setResendTimer(prev => (prev > 0 ? prev - 1 : 0));

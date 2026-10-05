@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system';
 import { zip } from 'react-native-zip-archive';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { FFmpegKit, ReturnCode } from 'ffmpeg-kit-react-native';
+
 
 /**
  * 1. HIGH-PERFORMANCE ZIPPING (Native C++)
@@ -42,30 +42,8 @@ export const optimizeImage = async (uri: string): Promise<string> => {
  */
 export const bakeVideoGeotag = async (videoUri: string, lat: string, lon: string, timestamp: string): Promise<string> => {
   try {
-    const outputUri = `${FileSystem.cacheDirectory}geotagged_vid_${Date.now()}.mp4`;
-    
-    // FFmpeg drawtext filter syntax requires colons inside the text to be strictly escaped
-    const safeTimestamp = timestamp.replace(/:/g, '\\:');
-    const watermarkText = `Lat: ${lat}   Lon: ${lon}   Date: ${safeTimestamp}`;
-
-    // FFmpeg Command Breakdown:
-    // -i : Input file
-    // -vf : Video Filter (drawtext for watermark, box for background)
-    // -c:v libx264 : Explicitly use x264 encoder (Required when using -vf)
-    // -preset ultrafast : Crucial for mobile devices to prevent CPU freezing
-    // -crf 28 : Constant Rate Factor (Controls quality/size ratio. 28 is highly compressed but acceptable for audits)
-    // -c:a copy : Copies original audio stream without re-encoding
-    const command = `-i ${videoUri} -vf "drawtext=text='${watermarkText}':x=30:y=H-th-30:fontcolor=white:fontsize=36:box=1:boxcolor=black@0.6:boxborderw=15" -c:v libx264 -preset ultrafast -crf 28 -c:a copy ${outputUri}`;
-
-    const session = await FFmpegKit.execute(command);
-    const returnCode = await session.getReturnCode();
-
-    if (ReturnCode.isSuccess(returnCode)) {
-      return outputUri;
-    } else {
-      console.error('FFmpeg rendering failed. Return code:', returnCode);
-      return videoUri; // Fallback to raw video so data isn't lost
-    }
+    console.log('Skipping video geotagging (FFmpeg bypassed for now). Returning original video.');
+    return videoUri;
   } catch (error) {
     console.error('Video geotagging failed:', error);
     return videoUri;

@@ -13,19 +13,19 @@ import { registerAndSavePushToken, sendTestNotification } from '../../utils/push
 export default function ProfileTab() {
   const store = useUserStore();
   const sqlDb = SQLite.useSQLiteContext();
-  
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [userId, setUserId] = useState('');
-  
+
   const [pushToken, setPushToken] = useState<string | null>(null);
-  
+
   // Added uniqueUserId and made email state editable
   const [name, setName] = useState('');
   const [uniqueUserId, setUniqueUserId] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  
+
   const [isEditingPhone, setIsEditingPhone] = useState(false);
   const [isEditingEmail, setIsEditingEmail] = useState(false);
 
@@ -48,10 +48,10 @@ export default function ProfileTab() {
       if (sessionStr) {
         const session = JSON.parse(sessionStr);
         setUserId(session.userId);
-        
+
         const token = await registerAndSavePushToken(session.userId);
         if (token) setPushToken(token);
-        
+
         const userRef = doc(db, 'users', session.userId);
         const snap = await getDoc(userRef);
         if (snap.exists()) {
@@ -62,8 +62,8 @@ export default function ProfileTab() {
           setPhone(data.phone || '');
         }
       }
-      
-      const res = await sqlDb.getAllAsync<{state: string}>("SELECT DISTINCT state FROM tenders WHERE state IS NOT NULL AND state != ''");
+
+      const res = await sqlDb.getAllAsync<{ state: string }>("SELECT DISTINCT state FROM tenders WHERE state IS NOT NULL AND state != ''");
       setStates(['All States', ...res.map(r => r.state).sort()]);
     } catch (e) {
       console.error(e);
@@ -90,7 +90,7 @@ export default function ProfileTab() {
   const handleSaveEmail = async () => {
     const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
     if (!emailRegex.test(email)) return Alert.alert("Invalid", "Please enter a valid email address.");
-    
+
     setSaving(true);
     try {
       await updateDoc(doc(db, 'users', userId), { email: email.toLowerCase().trim() });
@@ -107,7 +107,7 @@ export default function ProfileTab() {
     store.updateProfile({ selectedState: newState });
     setShowStateModal(false);
     if (!userId) return;
-    
+
     try {
       await updateDoc(doc(db, 'users', userId), { workRegion: newState });
     } catch (e) {
@@ -139,17 +139,19 @@ export default function ProfileTab() {
   const handleLogout = () => {
     Alert.alert("Logout Securely", "Keep your visit data secure by logging out of the app. \n\nNote: Just make sure you remember your password before logging out or contact @admin for support!", [
       { text: "Cancel", style: "cancel" },
-      { text: "Logout", style: "destructive", onPress: async () => {
+      {
+        text: "Logout", style: "destructive", onPress: async () => {
           await wipeSecureDatabase();
           await SecureStore.deleteItemAsync('irma_device_auth_session');
           await Updates.reloadAsync();
-      }}
+        }
+      }
     ]);
   };
 
   const handleTestNotification = async () => {
     if (!pushToken) {
-      Alert.alert("Token Missing", "Please ensure you are on a physical device and have granted notification permissions.");
+      Alert.alert("No Alerts Yet!", "You'll get app update notification if needed you need to do so in the future.");
       return;
     }
     try {
@@ -166,8 +168,8 @@ export default function ProfileTab() {
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 60, paddingBottom: 60 }}>
       <View style={styles.header}>
         <Text style={styles.title}>User Profile</Text>
-        <TouchableOpacity 
-          style={styles.bellBtn} 
+        <TouchableOpacity
+          style={styles.bellBtn}
           onPress={handleTestNotification}
         >
           <Ionicons name="notifications-outline" size={24} color="#1E293B" />
@@ -177,10 +179,10 @@ export default function ProfileTab() {
 
       <View style={styles.card}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 }}>
-           <Text style={styles.sectionLabel}>Identity Details</Text>
-           <TouchableOpacity onPress={() => Alert.alert("Locked Fields", "Identity details are locked to your user profile. Please contact the administrator to change these details.")}>
-             <Ionicons name="lock-closed" size={18} color="#94A3B8" />
-           </TouchableOpacity>
+          <Text style={styles.sectionLabel}>Identity Details</Text>
+          <TouchableOpacity onPress={() => Alert.alert("Locked Fields", "Identity details are locked to your user profile. Please contact the administrator to change these details.")}>
+            <Ionicons name="lock-closed" size={18} color="#94A3B8" />
+          </TouchableOpacity>
         </View>
 
         <View style={{ marginBottom: 15 }}>
@@ -196,16 +198,16 @@ export default function ProfileTab() {
 
         <View style={{ marginBottom: 15 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-             <Text style={styles.subLabel}>Registered Email</Text>
-             <TouchableOpacity onPress={() => isEditingEmail ? handleSaveEmail() : setIsEditingEmail(true)}>
-               <Text style={{ color: '#2563EB', fontWeight: 'bold', fontSize: 12 }}>{isEditingEmail ? "SAVE" : "EDIT"}</Text>
-             </TouchableOpacity>
+            <Text style={styles.subLabel}>Registered Email</Text>
+            <TouchableOpacity onPress={() => isEditingEmail ? handleSaveEmail() : setIsEditingEmail(true)}>
+              <Text style={{ color: '#2563EB', fontWeight: 'bold', fontSize: 12 }}>{isEditingEmail ? "SAVE" : "EDIT"}</Text>
+            </TouchableOpacity>
           </View>
-          <TextInput 
-            style={[styles.inputBox, isEditingEmail ? { backgroundColor: '#FFF', borderColor: '#2563EB', borderWidth: 1 } : styles.lockedBox]} 
-            value={email} 
-            onChangeText={setEmail} 
-            editable={isEditingEmail} 
+          <TextInput
+            style={[styles.inputBox, isEditingEmail ? { backgroundColor: '#FFF', borderColor: '#2563EB', borderWidth: 1 } : styles.lockedBox]}
+            value={email}
+            onChangeText={setEmail}
+            editable={isEditingEmail}
             keyboardType="email-address"
             autoCapitalize="none"
           />
@@ -213,16 +215,16 @@ export default function ProfileTab() {
 
         <View style={{ marginBottom: 5 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-             <Text style={styles.subLabel}>Contact Number</Text>
-             <TouchableOpacity onPress={() => isEditingPhone ? handleSavePhone() : setIsEditingPhone(true)}>
-               <Text style={{ color: '#2563EB', fontWeight: 'bold', fontSize: 12 }}>{isEditingPhone ? "SAVE" : "EDIT"}</Text>
-             </TouchableOpacity>
+            <Text style={styles.subLabel}>Contact Number</Text>
+            <TouchableOpacity onPress={() => isEditingPhone ? handleSavePhone() : setIsEditingPhone(true)}>
+              <Text style={{ color: '#2563EB', fontWeight: 'bold', fontSize: 12 }}>{isEditingPhone ? "SAVE" : "EDIT"}</Text>
+            </TouchableOpacity>
           </View>
-          <TextInput 
-            style={[styles.inputBox, isEditingPhone ? { backgroundColor: '#FFF', borderColor: '#2563EB', borderWidth: 1 } : styles.lockedBox]} 
-            value={phone} 
-            onChangeText={setPhone} 
-            editable={isEditingPhone} 
+          <TextInput
+            style={[styles.inputBox, isEditingPhone ? { backgroundColor: '#FFF', borderColor: '#2563EB', borderWidth: 1 } : styles.lockedBox]}
+            value={phone}
+            onChangeText={setPhone}
+            editable={isEditingPhone}
             keyboardType="phone-pad"
           />
         </View>
@@ -238,16 +240,16 @@ export default function ProfileTab() {
 
       <View style={styles.card}>
         <Text style={styles.sectionLabel}>Security & Access</Text>
-        
+
         <TouchableOpacity style={styles.actionRow} onPress={() => setShowPassModal(true)}>
-          <Ionicons name="key" size={20} color="#475569" style={{marginRight: 10}} />
+          <Ionicons name="key" size={20} color="#475569" style={{ marginRight: 10 }} />
           <Text style={{ flex: 1, fontSize: 16, color: '#1E293B', fontWeight: '600' }}>Change Password</Text>
           <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
         </TouchableOpacity>
       </View>
 
       <TouchableOpacity style={styles.centeredLogoutBtn} onPress={handleLogout}>
-        <Ionicons name="log-out" size={20} color="#EF4444" style={{marginRight: 10}} />
+        <Ionicons name="log-out" size={20} color="#EF4444" style={{ marginRight: 10 }} />
         <Text style={{ fontSize: 16, color: '#EF4444', fontWeight: 'bold' }}>Secure Logout</Text>
       </TouchableOpacity>
       <Text style={{ fontSize: 11, color: '#94A3B8', marginTop: 10, textAlign: 'center', paddingHorizontal: 20 }}>
@@ -261,7 +263,7 @@ export default function ProfileTab() {
               <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E293B' }}>Select Default State</Text>
               <TouchableOpacity onPress={() => setShowStateModal(false)}><Ionicons name="close" size={24} color="#64748B" /></TouchableOpacity>
             </View>
-            <FlatList data={states} keyExtractor={i => i} renderItem={({item}) => (
+            <FlatList data={states} keyExtractor={i => i} renderItem={({ item }) => (
               <TouchableOpacity style={styles.modalItem} onPress={() => handleUpdateWorkRegion(item)}>
                 <Text style={{ fontSize: 16, color: store.selectedState === item ? '#2563EB' : '#1E293B', fontWeight: store.selectedState === item ? 'bold' : 'normal' }}>{item}</Text>
                 {store.selectedState === item && <Ionicons name="checkmark" size={20} color="#2563EB" />}
@@ -275,15 +277,15 @@ export default function ProfileTab() {
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
           <View style={{ backgroundColor: '#FFF', padding: 25, borderRadius: 16, width: '85%' }}>
             <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1E293B', marginBottom: 20 }}>Change Password</Text>
-            
+
             <TextInput style={[styles.inputBox, { backgroundColor: '#F1F5F9', marginBottom: 15 }]} placeholder="Current Password" secureTextEntry value={currentPass} onChangeText={setCurrentPass} />
             <TextInput style={[styles.inputBox, { backgroundColor: '#F1F5F9', marginBottom: 20 }]} placeholder="New Password" secureTextEntry value={newPass} onChangeText={setNewPass} />
-            
+
             <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 15 }}>
-               <TouchableOpacity onPress={() => setShowPassModal(false)} style={{ padding: 10 }}><Text style={{ color: '#64748B', fontWeight: 'bold' }}>Cancel</Text></TouchableOpacity>
-               <TouchableOpacity onPress={handleChangePassword} style={{ backgroundColor: '#2563EB', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
-                 {saving ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Update</Text>}
-               </TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowPassModal(false)} style={{ padding: 10 }}><Text style={{ color: '#64748B', fontWeight: 'bold' }}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity onPress={handleChangePassword} style={{ backgroundColor: '#2563EB', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}>
+                {saving ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: 'bold' }}>Update</Text>}
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -297,10 +299,10 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   title: { fontSize: 24, fontWeight: '900', color: '#1E293B' },
-  
+
   bellBtn: { position: 'relative', padding: 5 },
   notificationBadge: { position: 'absolute', top: 5, right: 6, backgroundColor: '#EF4444', width: 10, height: 10, borderRadius: 5, borderWidth: 2, borderColor: '#F8FAFC' },
-  
+
   card: { backgroundColor: '#FFF', padding: 20, borderRadius: 16, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0', elevation: 2 },
   sectionLabel: { fontSize: 14, fontWeight: '800', color: '#475569', textTransform: 'uppercase', marginBottom: 10 },
   subLabel: { fontSize: 12, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -308,9 +310,9 @@ const styles = StyleSheet.create({
   lockedText: { color: '#64748B', fontSize: 16, fontWeight: '600' },
   inputBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, borderRadius: 10, fontSize: 16, color: '#1E293B' },
   actionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#F1F5F9' },
-  
+
   centeredLogoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', paddingVertical: 15, borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', marginTop: 10 },
-  
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, borderColor: '#E2E8F0' },

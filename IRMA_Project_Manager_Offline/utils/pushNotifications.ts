@@ -10,6 +10,8 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -49,18 +51,23 @@ export const registerAndSavePushToken = async (userId: string): Promise<string |
     }
 
     const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-    const token = tokenData.data;
+    const token = tokenData?.data;
 
-    if (userId) {
+    if (token && userId) {
       await updateDoc(doc(db, 'users', userId), { 
         pushToken: token,
         updatedAt: new Date()
       });
     }
 
-    return token;
-  } catch (error) {
-    console.error('Error getting or saving push token:', error);
+    return token || null;
+  } catch (error: any) {
+    const errMessage = error?.message || String(error);
+    if (errMessage.includes('FIS_AUTH_ERROR')) {
+      console.warn('[PushNotifications] Push token retrieval skipped (FIS_AUTH_ERROR: Firebase Installations API restricted or not enabled on Google Cloud key). Offline & dev mode continuing normally.');
+    } else {
+      console.warn('[PushNotifications] Could not retrieve push token:', errMessage);
+    }
     return null;
   }
 };
